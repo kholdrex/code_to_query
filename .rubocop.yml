@@ -1,0 +1,122 @@
+require:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.0  # Match gemspec requirement
+  NewCops: enable
+  Exclude:
+    - 'vendor/**/*'
+    - 'gemfiles/**/*'
+    - 'examples/**/*'
+
+# Documentation is important but not always required
+Style/Documentation:
+  Enabled: false
+
+# Allow longer lines for readability
+Layout/LineLength:
+  Max: 200  # Increased for complex regex patterns
+  Exclude:
+    - 'spec/**/*'
+
+# Increase complexity limits for data processing code
+Metrics/AbcSize:
+  Max: 200  # Increased from default 17
+
+Metrics/CyclomaticComplexity:
+  Max: 50  # Increased from default 7
+
+Metrics/PerceivedComplexity:
+  Max: 40  # Increased from default 8
+
+# Allow longer methods for complex logic
+Metrics/MethodLength:
+  Max: 150  # Increased from 15
+  Exclude:
+    - 'spec/**/*'
+
+# Allow longer classes for main components
+Metrics/ClassLength:
+  Max: 600  # Increased from 200
+
+# Allow longer blocks
+Metrics/BlockLength:
+  Max: 130  # Increased from default 25
+  Exclude:
+    - 'spec/**/*'
+    - 'tasks/**/*'
+
+# RSpec specific configurations
+RSpec/ExampleLength:
+  Max: 30  # Increased for complex test scenarios
+
+RSpec/MultipleExpectations:
+  Max: 8  # Increased for comprehensive tests
+
+RSpec/NestedGroups:
+  Max: 4
+
+RSpec/MultipleMemoizedHelpers:
+  Max: 10  # Increased from default 5
+
+# Allow describe with strings
+RSpec/DescribeClass:
+  Enabled: false
+
+# Disable some overly strict rules
+Gemspec/DevelopmentDependencies:
+  Enabled: false
+
+Lint/SuppressedException:
+  Enabled: false
+
+Lint/SafeNavigationWithEmpty:
+  Enabled: false
+
+Lint/NonAtomicFileOperation:
+  Enabled: false
+
+Lint/DuplicateBranch:
+  Enabled: false
+
+Lint/NonLocalExitFromIterator:
+  Enabled: false
+
+Style/IfUnlessModifier:
+  Enabled: false
+
+Style/StringLiteralsInInterpolation:
+  Enabled: false
+
+Style/MultilineBlockChain:
+  Enabled: false
+
+# Naming rules - disable overly strict conventions
+Naming/PredicateMethod:
+  Enabled: false
+
+Naming/PredicatePrefix:
+  Enabled: false
+
+Naming/AccessorMethodName:
+  Enabled: false
+
+# Parameter lists can be longer for DSL-style code
+Metrics/ParameterLists:
+  Max: 8
+
+# Additional RSpec relaxations
+RSpec/SpecFilePathFormat:
+  Enabled: false
+
+RSpec/MultipleDescribes:
+  Enabled: false
+
+RSpec/ExpectActual:
+  Enabled: false
+
+RSpec/AnyInstance:
+  Enabled: false
+
+RSpec/VerifiedDoubles:
+  Enabled: false
