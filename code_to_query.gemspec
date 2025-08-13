@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
 
   spec.summary       = 'Natural language to safe, parameterized SQL for Rails'
   spec.description   = 'Ask for data in plain English; get validated, parameterized SQL with guardrails.'
-  spec.homepage      = 'https://github.com/CodeToQuery/code_to_query'
+  spec.homepage      = 'https://codetoquery.com/'
   spec.license       = 'MIT'
 
   spec.required_ruby_version = '>= 3.0'
@@ -21,7 +21,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   spec.metadata = {
-    'source_code_uri' => 'https://github.com/CodeToQuery/code_to_query',
+    'source_code_uri' => 'https://github.com/kholdrex/code_to_query',
     'rubygems_mfa_required' => 'true'
   }
 

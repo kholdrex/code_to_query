@@ -28,7 +28,7 @@ Run `bundle install` and create a config file:
 # config/initializers/code_to_query.rb
 CodeToQuery.configure do |config|
   config.openai_api_key = ENV['OPENAI_API_KEY']
-  config.openai_model = 'gpt-4'
+  config.openai_model = 'gpt-4.1-mini'
   
   # Security settings
   config.enable_explain_gate = true
