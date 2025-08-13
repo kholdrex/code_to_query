@@ -24,10 +24,10 @@ Metrics/AbcSize:
   Max: 200  # Increased from default 17
 
 Metrics/CyclomaticComplexity:
-  Max: 50  # Increased from default 7
+  Max: 65  # Increased from default 7
 
 Metrics/PerceivedComplexity:
-  Max: 40  # Increased from default 8
+  Max: 65  # Increased from default 8
 
 # Allow longer methods for complex logic
 Metrics/MethodLength:

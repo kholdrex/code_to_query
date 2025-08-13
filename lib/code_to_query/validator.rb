@@ -93,7 +93,6 @@ module CodeToQuery
       intent
     end
 
-    # rubocop:disable Metrics/PerceivedComplexity
     def enforce_allowlists!(intent, current_user:, allow_tables:)
       # Enforce table allowlist if provided (from user input)
       if Array(allow_tables).any?
@@ -192,7 +191,6 @@ module CodeToQuery
       # Re-raise as ArgumentError to keep validator contract
       raise ArgumentError, e.message
     end
-    # rubocop:enable Metrics/PerceivedComplexity
 
     def safe_call_policy_adapter(adapter, current_user, table:, intent:)
       adapter.call(current_user, table: table, intent: intent)

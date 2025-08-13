@@ -197,7 +197,7 @@ module CodeToQuery
       compile_with_string_building(intent)
     end
 
-    # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity, Metrics/BlockLength
+    # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockLength
     # NOTE: This method is intentionally monolithic for clarity and to avoid regressions in SQL assembly.
     # TODO: Extract EXISTS/NOT EXISTS handling and simple predicate building into small helpers.
     def compile_with_string_building(intent)
@@ -426,7 +426,7 @@ module CodeToQuery
 
       { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec }
     end
-    # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/MethodLength, Metrics/PerceivedComplexity, Metrics/BlockLength
+    # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockLength
 
     def apply_policy_in_subquery(sub_where, bind_spec, related_table, placeholder_index)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)

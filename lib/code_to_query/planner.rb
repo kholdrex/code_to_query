@@ -159,7 +159,6 @@ module CodeToQuery
 
     # Fill missing intent params with simple values parsed from the prompt.
     # Example: "student with id 17963" -> maps first integer to first missing *_id param.
-    # rubocop:disable Metrics/PerceivedComplexity
     def backfill_params_from_prompt(prompt, intent, schema)
       return intent unless prompt.is_a?(String)
       return intent unless intent.is_a?(Hash)
@@ -256,7 +255,6 @@ module CodeToQuery
     rescue StandardError
       intent
     end
-    # rubocop:enable Metrics/PerceivedComplexity
 
     def extract_enums_index(schema)
       index = Hash.new { |h, k| h[k] = {} }

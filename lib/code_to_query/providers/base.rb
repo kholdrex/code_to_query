@@ -16,7 +16,7 @@ module CodeToQuery
 
       protected
 
-      # rubocop:disable Metrics/PerceivedComplexity, Metrics/BlockNesting
+      # rubocop:disable Metrics/BlockNesting
       def build_system_context(schema, allow_tables)
         # Support passing either a raw schema hash ({'tables'=>[...]})
         # or a full context pack ({'schema'=>{...}, 'models'=>{...}, 'glossary'=>{...}})
@@ -96,7 +96,7 @@ module CodeToQuery
           constraints: build_constraints_info
         }
       end
-      # rubocop:enable Metrics/PerceivedComplexity, Metrics/BlockNesting
+      # rubocop:enable Metrics/BlockNesting
 
       def build_constraints_info
         base_constraints = [
