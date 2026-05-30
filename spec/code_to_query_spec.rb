@@ -24,6 +24,29 @@ RSpec.describe CodeToQuery do
       stub_config(stub_llm: true, provider: :local)
     end
 
+    it 'emits non-sensitive pipeline instrumentation' do
+      events = []
+      subscriber = ActiveSupport::Notifications.subscribe(/\Acode_to_query\./) do |name, started, finished, _id, payload|
+        events << [name, payload, started, finished]
+      end
+
+      described_class.ask(prompt: 'Get users', allow_tables: ['users'])
+
+      event_names = events.map(&:first)
+      expect(event_names).to include(
+        'code_to_query.plan',
+        'code_to_query.validate',
+        'code_to_query.compile',
+        'code_to_query.lint'
+      )
+      expect(events.map { |event| event[1] }).not_to include(include(prompt: 'Get users'))
+      expect(events.map { |event| event[1] }).not_to include(include(:sql))
+      expect(events.map { |event| event[1] }).not_to include(include(:params))
+      expect(events).to all(satisfy { |_name, _payload, started, finished| finished >= started })
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+
     it 'returns a Query object' do
       query = described_class.ask(prompt: 'Get users', allow_tables: ['users'])
       expect(query).to be_a(CodeToQuery::Query)
