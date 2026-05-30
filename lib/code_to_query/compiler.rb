@@ -18,9 +18,9 @@ module CodeToQuery
     def compile(intent, current_user: nil)
       intent_with_policy = apply_policy_predicates(intent, current_user)
       if use_arel?
-        compile_with_arel(intent_with_policy)
+        compile_with_arel(intent_with_policy, current_user)
       else
-        compile_with_string_building(intent_with_policy)
+        compile_with_string_building(intent_with_policy, current_user)
       end
     end
 
@@ -32,7 +32,7 @@ module CodeToQuery
       table = intent['table']
       policy_info = safely_fetch_policy(table: table, current_user: current_user, intent: intent)
       policy_hash = extract_enforced_predicates(policy_info)
-      return intent if policy_hash.nil? || policy_hash.empty?
+      return intent if policy_hash.empty?
 
       filters = Array(intent['filters']) + policy_hash.map do |column, value|
         if value.is_a?(Range) && value.begin && value.end
@@ -65,7 +65,11 @@ module CodeToQuery
         'filters' => filters,
         'params' => params
       )
+    rescue PolicyAdapterError
+      raise
     rescue StandardError => e
+      raise policy_failure("Policy application failed: #{e.message}") unless policy_adapter_fail_open?
+
       @config.logger.warn("[code_to_query] Policy application failed: #{e.message}")
       intent
     end
@@ -77,22 +81,82 @@ module CodeToQuery
         @config.policy_adapter.call(current_user, table: table)
       end
     rescue ArgumentError
-      # Backward compatibility: some adapters may accept only current_user
-      @config.policy_adapter.call(current_user)
+      # Backward compatibility: adapters may accept user plus table or only user.
+      begin
+        @config.policy_adapter.call(current_user, table: table)
+      rescue ArgumentError
+        begin
+          @config.policy_adapter.call(current_user)
+        rescue StandardError => e
+          return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+
+          raise policy_failure("Policy adapter failed: #{e.message}")
+        end
+      rescue StandardError => e
+        return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+
+        raise policy_failure("Policy adapter failed: #{e.message}")
+      end
+    rescue StandardError => e
+      return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+
+      raise policy_failure("Policy adapter failed: #{e.message}")
     end
 
     def extract_enforced_predicates(policy_info)
-      return policy_info unless policy_info.is_a?(Hash)
+      return handle_policy_failure('Policy adapter returned nil') if policy_info.nil?
+      unless policy_info.is_a?(Hash)
+        return handle_policy_failure("Policy adapter returned #{policy_info.class}, expected Hash")
+      end
 
-      policy_info[:enforced_predicates] || policy_info['enforced_predicates'] ||
-        policy_info[:predicates] || policy_info['predicates'] || {}
+      predicates = policy_info[:enforced_predicates] || policy_info['enforced_predicates'] ||
+                   policy_info[:predicates] || policy_info['predicates']
+      predicates = policy_info if predicates.nil? && direct_predicate_hash?(policy_info)
+      predicates ||= {}
+      unless predicates.is_a?(Hash)
+        return handle_policy_failure("Policy predicates must be a Hash, got #{predicates.class}")
+      end
+
+      predicates.each do |column, value|
+        return handle_policy_failure('Policy predicate columns must be present') if column.to_s.strip.empty?
+        next if value.is_a?(Range) && value.begin && value.end
+        next unless value.nil? || value.is_a?(Hash) || value.is_a?(Array)
+
+        return handle_policy_failure("Malformed policy predicate for #{column}")
+      end
+
+      predicates
+    end
+
+    def direct_predicate_hash?(policy_info)
+      policy_info.keys.none? do |key|
+        %i[enforced_predicates predicates allowed_tables allowed_columns].include?(key) ||
+          %w[enforced_predicates predicates allowed_tables allowed_columns].include?(key.to_s)
+      end
+    end
+
+    def policy_adapter_fail_open?
+      @config.respond_to?(:policy_adapter_fail_open) && @config.policy_adapter_fail_open
+    end
+
+    def handle_policy_failure(message)
+      if policy_adapter_fail_open?
+        @config.logger.warn("[code_to_query] #{message}")
+        return {}
+      end
+
+      raise PolicyAdapterError, message
+    end
+
+    def policy_failure(message)
+      PolicyAdapterError.new(message)
     end
 
     def use_arel?
       defined?(Arel) && defined?(ActiveRecord::Base) && ActiveRecord::Base.connected?
     end
 
-    def compile_with_arel(intent)
+    def compile_with_arel(intent, current_user = nil)
       table_name = intent.fetch('table')
 
       table = if defined?(ActiveRecord::Base)
@@ -207,13 +271,13 @@ module CodeToQuery
       { sql: sql, params: params_hash, bind_spec: bind_spec }
     rescue StandardError => e
       @config.logger.warn("[code_to_query] Arel compilation failed: #{e.message}")
-      compile_with_string_building(intent)
+      compile_with_string_building(intent, current_user)
     end
 
     # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockLength, Metrics/CyclomaticComplexity
     # NOTE: This method is intentionally monolithic for clarity and to avoid regressions in SQL assembly.
     # TODO: Extract EXISTS/NOT EXISTS handling and simple predicate building into small helpers.
-    def compile_with_string_building(intent)
+    def compile_with_string_building(intent, current_user = nil)
       table = intent.fetch('table')
       # Detect function columns (e.g., COUNT(*), SUM(amount)) and build proper SELECT list
       raw_columns = intent['columns'].presence || ['*']
@@ -289,7 +353,7 @@ module CodeToQuery
 
             # Inject policy predicates for related table if available
             sub_where, placeholder_index = apply_policy_in_subquery(
-              sub_where, bind_spec, related_table, placeholder_index
+              sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
             )
 
             related_filters.each do |rf|
@@ -350,7 +414,7 @@ module CodeToQuery
 
             # Inject policy predicates for related table if available
             sub_where, placeholder_index = apply_policy_in_subquery(
-              sub_where, bind_spec, related_table, placeholder_index
+              sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
             )
 
             # Additional predicates within the subquery
@@ -465,34 +529,56 @@ module CodeToQuery
     end
     # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockLength, Metrics/CyclomaticComplexity
 
-    def apply_policy_in_subquery(sub_where, bind_spec, related_table, placeholder_index)
+    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
-      info = safely_fetch_policy(table: related_table, current_user: nil)
+      info = safely_fetch_policy(table: related_table, current_user: current_user)
       predicates = extract_enforced_predicates(info)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 
       predicates.each do |column, value|
         rcol = "#{quote_ident(related_table)}.#{quote_ident(column)}"
+        policy_key_prefix = subquery_policy_key_prefix(related_table, column, placeholder_index)
         if value.is_a?(Range) && value.begin && value.end
+          start_key = "#{policy_key_prefix}_start"
+          end_key = "#{policy_key_prefix}_end"
+          params_hash[start_key] = value.begin
+          params_hash[end_key] = value.end
           p1 = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: "policy_#{column}_start", column: column, cast: nil }
+          bind_spec << { key: start_key, column: column, cast: nil }
           placeholder_index += 1
           p2 = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: "policy_#{column}_end", column: column, cast: nil }
+          bind_spec << { key: end_key, column: column, cast: nil }
           placeholder_index += 1
           sub_where << "#{rcol} BETWEEN #{p1} AND #{p2}"
         else
+          key = policy_key_prefix
+          params_hash[key] = value
           p = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: "policy_#{column}", column: column, cast: nil }
+          bind_spec << { key: key, column: column, cast: nil }
           placeholder_index += 1
           sub_where << "#{rcol} = #{p}"
         end
       end
 
       [sub_where, placeholder_index]
-    rescue StandardError
+    rescue PolicyAdapterError
+      raise
+    rescue StandardError => e
+      raise policy_failure("Policy application failed in subquery: #{e.message}") unless policy_adapter_fail_open?
+
       [sub_where, placeholder_index]
+    end
+
+    def subquery_policy_key_prefix(table, column, placeholder_index)
+      safe_table = policy_key_fragment(table)
+      safe_column = policy_key_fragment(column)
+
+      "policy_subquery_#{placeholder_index}_#{safe_table}_#{safe_column}"
+    end
+
+    def policy_key_fragment(value)
+      value.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
     end
 
     def build_arel_condition(table, filter, bind_spec)
@@ -573,6 +659,8 @@ module CodeToQuery
 
     def quote_ident(name)
       return name if name == '*'
+
+      name = name.to_s
 
       case @config.adapter
       when :postgres, :postgresql

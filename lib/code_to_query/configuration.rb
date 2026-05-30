@@ -19,7 +19,7 @@ module CodeToQuery
                   :aggregation_limit, :distinct_limit, :exists_limit,
                   :planner_max_attempts, :planner_feedback_mode, :prefer_static_scan,
                   :static_scan_dirs, :context_rag_top_k, :require_limit_by_default,
-                  :explain_fail_open
+                  :explain_fail_open, :policy_adapter_fail_open
 
     # Extended configuration knobs (added for LLM transport and logging)
     attr_accessor :logger, :llm_api_base, :llm_timeout, :llm_temperature, :provider_options, :system_prompt_template, :llm_client
@@ -38,6 +38,7 @@ module CodeToQuery
       @force_readonly_session = false
       @reset_session_after_query = false
       @policy_adapter = nil
+      @policy_adapter_fail_open = false
       @context_pack_path = if defined?(Rails)
                              Rails.root.join('db/code_to_query/context.json')
                            else
