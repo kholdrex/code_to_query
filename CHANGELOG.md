@@ -2,6 +2,11 @@
 
 This file tracks the major changes in each release.
 
+## [Unreleased]
+
+### Changed
+- Policy adapter failures now fail closed by default instead of silently omitting enforced predicates; set `policy_adapter_fail_open = true` only when availability must take precedence over row-level policy enforcement.
+
 ## [0.1.0] - 2025-08-14
 
 ### Added

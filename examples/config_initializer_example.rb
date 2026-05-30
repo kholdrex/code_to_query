@@ -8,56 +8,56 @@ CodeToQuery.configure do |config|
   config.adapter = :postgres
   config.readonly_role = :reporting
   config.default_limit = 100
-  config.max_limit = 10000
+  config.max_limit = 10_000
   config.max_joins = 3
-  
+
   # OpenAI settings
-  config.openai_api_key = ENV['OPENAI_API_KEY']
+  config.openai_api_key = ENV.fetch('OPENAI_API_KEY', nil)
   config.openai_model = 'gpt-4'
   config.stub_llm = false
-  
+
   # Security settings
   config.enable_explain_gate = true
   config.allow_seq_scans = false
-  config.max_query_cost = 10000
-  config.max_query_rows = 100000
+  config.max_query_cost = 10_000
+  config.max_query_rows = 100_000
   config.block_subqueries = false
   config.force_readonly_session = true
-  
+
   # Query execution
   config.query_timeout = 30
   config.reset_session_after_query = false
-  
+
   # Context pack path
-  config.context_pack_path = Rails.root.join("db/code_to_query/context.json")
-  
-  # Policy enforcement
-  config.policy_adapter = ->(user) do
-    return {} unless user
-    
+  config.context_pack_path = Rails.root.join('db/code_to_query/context.json')
+
+  # Policy enforcement (fails closed by default if the adapter raises or returns malformed data)
+  config.policy_adapter = lambda { |user|
+    raise 'current user is required' unless user
+
     policies = {}
-    
+
     if user.respond_to?(:tenant_id)
       policies[:tenant_id] = user.tenant_id
     end
-    
+
     if user.respond_to?(:company_id)
       policies[:company_id] = user.company_id
     end
-    
-    unless user.admin?
-      policies[:user_id] = user.id if user.respond_to?(:id)
+
+    if !user.admin? && user.respond_to?(:id)
+      policies[:user_id] = user.id
     end
-    
-    policies
-  end
+
+    { enforced_predicates: policies.compact }
+  }
 end
 
 # Development/Test overrides
 if Rails.env.development? || Rails.env.test?
   CodeToQuery.configure do |config|
     config.allow_seq_scans = true
-    config.max_query_cost = 50000
+    config.max_query_cost = 50_000
     config.enable_explain_gate = false
     config.stub_llm = true if Rails.env.test?
   end
@@ -73,13 +73,13 @@ if Rails.env.production?
     config.force_readonly_session = true
     config.block_subqueries = true
     config.enable_explain_gate = true
-    
+
     unless config.openai_api_key.present?
-      Rails.logger.warn "CodeToQuery: OpenAI API key not configured"
+      Rails.logger.warn 'CodeToQuery: OpenAI API key not configured'
     end
-    
+
     unless config.readonly_role
-      Rails.logger.warn "CodeToQuery: Readonly database role not configured"
+      Rails.logger.warn 'CodeToQuery: Readonly database role not configured'
     end
   end
 end

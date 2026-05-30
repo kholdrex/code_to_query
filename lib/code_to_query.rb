@@ -10,6 +10,7 @@ require 'active_support/core_ext/hash/keys'
 
 require_relative 'code_to_query/version'
 require_relative 'code_to_query/configuration'
+require_relative 'code_to_query/errors'
 require_relative 'code_to_query/providers/base'
 require_relative 'code_to_query/providers/openai'
 require_relative 'code_to_query/providers/local'
@@ -26,7 +27,6 @@ require_relative 'code_to_query/performance/cache'
 require_relative 'code_to_query/performance/optimizer'
 require_relative 'code_to_query/llm_client'
 require_relative 'code_to_query/policies/pundit_adapter'
-require_relative 'code_to_query/errors'
 require_relative 'code_to_query/railtie' if defined?(Rails)
 
 module CodeToQuery
@@ -50,6 +50,13 @@ module CodeToQuery
       end
 
       # LLM knobs and prompt template
+      unless config.respond_to?(:policy_adapter_fail_open)
+        class << config
+          attr_accessor :policy_adapter_fail_open
+        end
+        config.policy_adapter_fail_open = false
+      end
+
       return if config.respond_to?(:system_prompt_template)
 
       class << config

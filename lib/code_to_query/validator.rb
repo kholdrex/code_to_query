@@ -107,6 +107,18 @@ module CodeToQuery
       return unless adapter.respond_to?(:call)
 
       policy_info = safe_call_policy_adapter(adapter, current_user, table: intent['table'], intent: intent)
+      if policy_info.nil?
+        return handle_policy_failure('Policy adapter returned nil') if policy_adapter_fail_open?
+
+        raise CodeToQuery::PolicyAdapterError, 'Policy adapter returned nil'
+      end
+      unless policy_info.is_a?(Hash)
+        message = "Policy adapter returned #{policy_info.class}, expected Hash"
+        return handle_policy_failure(message) if policy_adapter_fail_open?
+
+        raise CodeToQuery::PolicyAdapterError, message
+      end
+
       allowed_tables = Array(policy_info[:allowed_tables] || policy_info['allowed_tables']).map { |t| t.to_s.downcase }
       if allowed_tables.any?
         table = intent['table']
@@ -187,6 +199,8 @@ module CodeToQuery
           end
         end
       end
+    rescue CodeToQuery::PolicyAdapterError
+      raise
     rescue StandardError => e
       # Re-raise as ArgumentError to keep validator contract
       raise ArgumentError, e.message
@@ -195,9 +209,37 @@ module CodeToQuery
     def safe_call_policy_adapter(adapter, current_user, table:, intent:)
       adapter.call(current_user, table: table, intent: intent)
     rescue ArgumentError
-      adapter.call(current_user, table: table)
-    rescue StandardError
+      begin
+        adapter.call(current_user, table: table)
+      rescue ArgumentError
+        begin
+          adapter.call(current_user)
+        rescue StandardError => e
+          return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+
+          raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
+        end
+      rescue StandardError => e
+        return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+
+        raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
+      end
+    rescue StandardError => e
+      if policy_adapter_fail_open?
+        CodeToQuery.config.logger.warn("[code_to_query] Policy adapter failed: #{e.message}")
+        return {}
+      end
+
+      raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
+    end
+
+    def handle_policy_failure(message)
+      CodeToQuery.config.logger.warn("[code_to_query] #{message}")
       {}
+    end
+
+    def policy_adapter_fail_open?
+      CodeToQuery.config.respond_to?(:policy_adapter_fail_open) && CodeToQuery.config.policy_adapter_fail_open
     end
   end
 end

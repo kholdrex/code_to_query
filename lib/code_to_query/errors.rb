@@ -2,4 +2,5 @@
 
 module CodeToQuery
   class NotRelationConvertibleError < StandardError; end
+  class PolicyAdapterError < StandardError; end
 end

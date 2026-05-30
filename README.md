@@ -111,14 +111,25 @@ rails code_to_query:verify       # Check context pack integrity
 ### Custom policies
 ```ruby
 config.policy_adapter = ->(user) do
-  return {} unless user
-  
-  {
-    company_id: user.company_id,
-    user_id: user.admin? ? nil : user.id
-  }
+  raise "current user is required" unless user
+
+  predicates = { company_id: user.company_id }
+  predicates[:user_id] = user.id unless user.admin?
+
+  { enforced_predicates: predicates }
 end
 ```
+
+Policy adapter failures fail closed by default: adapter exceptions, `nil` returns,
+and malformed predicate payloads raise `CodeToQuery::PolicyAdapterError` rather
+than running an unscoped query. If you intentionally prefer availability over
+row-level enforcement for a deployment, opt in explicitly:
+
+```ruby
+config.policy_adapter_fail_open = true
+```
+
+Leave `policy_adapter_fail_open` unset or `false` for the safe default.
 
 ### Custom schema
 ```ruby

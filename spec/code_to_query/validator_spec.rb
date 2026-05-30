@@ -360,13 +360,46 @@ RSpec.describe CodeToQuery::Validator do
       end
     end
 
+    context 'when adapter only accepts current user' do
+      let(:adapter) do
+        ->(user) { { allowed_tables: [user.fetch(:table)] } }
+      end
+
+      it 'falls back to current-user-only call signature under fail-closed default' do
+        CodeToQuery.config.policy_adapter_fail_open = false
+
+        result = validator.send(
+          :safe_call_policy_adapter,
+          adapter,
+          { table: 'accounts' },
+          table: 'orders',
+          intent: {}
+        )
+
+        expect(result[:allowed_tables]).to eq(['accounts'])
+      end
+    end
+
     context 'when adapter raises error' do
       let(:adapter) do
         ->(_user, **_kwargs) { raise StandardError, 'adapter error' }
       end
 
-      it 'returns empty hash' do
+      after do
+        CodeToQuery.config.policy_adapter_fail_open = false
+      end
+
+      it 'fails closed by default' do
+        expect do
+          validator.send(:safe_call_policy_adapter, adapter, nil, table: 'users', intent: {})
+        end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy adapter failed: adapter error/)
+      end
+
+      it 'returns empty hash only in explicit availability mode' do
+        CodeToQuery.config.policy_adapter_fail_open = true
+
         result = validator.send(:safe_call_policy_adapter, adapter, nil, table: 'users', intent: {})
+
         expect(result).to eq({})
       end
     end
