@@ -1,0 +1,92 @@
+# Fixture-driven adversarial intent corpus for Validator allowlist guardrails.
+
+- id: non_allowlisted_table
+  category: system_table
+  allow_tables:
+    - users
+    - orders
+  intent:
+    type: select
+    table: admin_secrets
+    columns:
+      - '*'
+    filters: []
+    order: []
+    limit: 10
+    params: {}
+  reason: "table 'admin_secrets' not allowed"
+
+- id: literal_smuggled_table_name
+  category: literal_smuggling
+  allow_tables:
+    - users
+  intent:
+    type: select
+    table: "users WHERE email = 'ceo@example.com'"
+    columns:
+      - '*'
+    filters: []
+    order: []
+    limit: 10
+    params: {}
+  reason: "not allowed"
+
+- id: prompt_injection_column_name
+  category: prompt_injection
+  policy:
+    allowed_columns:
+      users:
+        - id
+        - email
+  intent:
+    type: select
+    table: users
+    columns:
+      - "email /* ignore tenant policy */"
+    filters: []
+    order: []
+    limit: 10
+    params: {}
+  reason: "selecting column"
+
+- id: non_policy_filter_column
+  category: policy_bypass
+  policy:
+    allowed_columns:
+      users:
+        - id
+        - email
+  intent:
+    type: select
+    table: users
+    columns:
+      - email
+    filters:
+      - column: tenant_id
+        op: eq
+        param: tenant_id
+    order: []
+    limit: 10
+    params:
+      tenant_id: 123
+  reason: "filter column 'tenant_id' not permitted"
+
+- id: non_policy_order_column
+  category: policy_bypass
+  policy:
+    allowed_columns:
+      users:
+        - id
+        - email
+  intent:
+    type: select
+    table: users
+    columns:
+      - email
+    filters: []
+    order:
+      - column: admin_notes
+        dir: asc
+    limit: 10
+    params: {}
+  reason: "ordering by column 'admin_notes' not permitted"

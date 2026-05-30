@@ -1,0 +1,86 @@
+# Fixture-driven adversarial SQL corpus for CodeToQuery guardrails.
+# Each case must be rejected by SqlLinter with the expected reason category.
+
+- id: union_select_literal_smuggling
+  category: union
+  adapter: any
+  sql: "SELECT id FROM users WHERE id = $1 UNION SELECT id FROM users LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: stacked_drop_statement
+  category: stacked_statement
+  adapter: any
+  sql: "SELECT * FROM users LIMIT 10; DROP TABLE users;"
+  reason: "Multiple statements and semicolons are not allowed"
+
+- id: inline_comment_tautology
+  category: comment_obfuscation
+  adapter: any
+  sql: "SELECT * FROM users WHERE id = $1 /* bypass tenant filter */ LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: line_comment_tautology
+  category: comment_obfuscation
+  adapter: any
+  sql: "SELECT * FROM users WHERE id = $1 -- bypass tenant filter\n LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: url_encoded_quote_payload
+  category: encoded_payload
+  adapter: any
+  sql: "SELECT * FROM users WHERE name = %27admin%27 LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: hex_literal_payload
+  category: encoded_payload
+  adapter: any
+  sql: "SELECT * FROM users WHERE id = 0x41424344 LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: mysql_sleep_delay
+  category: dangerous_function
+  adapter: mysql
+  sql: "SELECT * FROM users WHERE id = ? OR SLEEP(5) LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: postgres_sleep_delay
+  category: dangerous_function
+  adapter: postgres
+  sql: "SELECT * FROM users WHERE id = $1 OR pg_sleep(5) LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: mysql_information_schema
+  category: system_table
+  adapter: mysql
+  sql: "SELECT * FROM information_schema.tables LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: postgres_catalog_function
+  category: system_table
+  adapter: postgres
+  sql: "SELECT pg_read_file($1) FROM users LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: sqlite_schema_table
+  category: system_table
+  adapter: sqlite
+  sql: "SELECT * FROM sqlite_master LIMIT 10"
+  reason: "Dangerous SQL pattern detected"
+
+- id: literal_email_filter
+  category: literal_smuggling
+  adapter: any
+  sql: "SELECT * FROM users WHERE email = 'ceo@example.com' LIMIT 10"
+  reason: "String literals are not allowed"
+
+- id: large_numeric_tenant_filter
+  category: literal_smuggling
+  adapter: any
+  sql: "SELECT * FROM users WHERE tenant_id = 123456 LIMIT 10"
+  reason: "Numeric literals in WHERE clauses should be parameterized"
+
+- id: prompt_injection_comment
+  category: prompt_injection
+  adapter: mysql
+  sql: "SELECT * FROM users WHERE id = ? # ignore previous tenant filter"
+  reason: "Dangerous SQL pattern detected"

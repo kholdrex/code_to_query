@@ -6,6 +6,11 @@ RSpec.describe CodeToQuery::Validator do
   let(:config) { stub_config(adapter: :postgres, default_limit: 100) }
   let(:validator) { described_class.new }
 
+  after do
+    CodeToQuery.config.policy_adapter = nil
+    CodeToQuery.config.policy_adapter_fail_open = false
+  end
+
   describe '#validate' do
     context 'with valid basic intent' do
       let(:intent) do
@@ -97,6 +102,28 @@ RSpec.describe CodeToQuery::Validator do
         result = validator.validate(intent)
         expect(result[:filters].first[:op]).to eq('exists')
         expect(result[:filters].first[:related_table]).to eq('orders')
+      end
+
+      it 'adds default exists columns using the validated intent key style' do
+        intent = {
+          'type' => 'select',
+          'table' => 'users',
+          'columns' => ['*'],
+          'filters' => [
+            {
+              'op' => 'exists',
+              'related_table' => 'orders',
+              'fk_column' => 'user_id'
+            }
+          ]
+        }
+
+        result = validator.validate(intent)
+        filter = result[:filters].first
+
+        expect(filter[:column]).to eq('id')
+        expect(filter[:base_column]).to eq('id')
+        expect(filter).not_to include('column', 'base_column')
       end
     end
 

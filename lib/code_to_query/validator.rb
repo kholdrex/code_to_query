@@ -44,7 +44,7 @@ module CodeToQuery
     def validate(intent_hash, current_user: nil, allow_tables: nil)
       preprocessed = preprocess_exists_filters(intent_hash)
 
-      if !preprocessed.key?('limit') && CodeToQuery.config.default_limit
+      if fetch_value(preprocessed, :limit).nil? && CodeToQuery.config.default_limit
         preprocessed = preprocessed.merge('limit' => CodeToQuery.config.default_limit)
       end
 
@@ -56,17 +56,17 @@ module CodeToQuery
       original_metrics = intent_hash['_metrics'] || intent_hash[:_metrics]
       validated['_metrics'] = original_metrics if original_metrics.is_a?(Hash)
 
-      Array(validated['filters']).each_with_index do |f, idx|
-        op = f['op'].to_s
+      Array(fetch_value(validated, :filters)).each_with_index do |f, idx|
+        op = fetch_value(f, :op).to_s
         if %w[exists not_exists].include?(op)
-          unless f['related_table'].to_s.strip != '' && f['fk_column'].to_s.strip != ''
+          unless fetch_value(f, :related_table).to_s.strip != '' && fetch_value(f, :fk_column).to_s.strip != ''
             raise ArgumentError, "Invalid intent: filters[#{idx}] requires related_table and fk_column for #{op}"
           end
 
-          f['base_column'] ||= 'id'
-          f['column'] ||= 'id'
+          assign_default_value(f, :base_column, 'id')
+          assign_default_value(f, :column, 'id')
         else
-          unless f['column'].to_s.strip != ''
+          unless fetch_value(f, :column).to_s.strip != ''
             raise ArgumentError, "Invalid intent: filters[#{idx}].column must be filled"
           end
         end
@@ -77,12 +77,38 @@ module CodeToQuery
 
     private
 
+    def fetch_value(hash, key)
+      return unless hash.respond_to?(:key?) && hash.respond_to?(:[])
+
+      return hash[key] if hash.key?(key)
+
+      if key.is_a?(Symbol)
+        string_key = key.to_s
+        return hash[string_key] if hash.key?(string_key)
+      end
+
+      if key.is_a?(String)
+        symbol_key = key.to_sym
+        return hash[symbol_key] if hash.key?(symbol_key)
+      end
+
+      nil
+    end
+
+    def assign_default_value(hash, key, value)
+      return unless hash.respond_to?(:key?) && hash.respond_to?(:[]=)
+      return unless fetch_value(hash, key).nil?
+
+      hash[key.to_sym] = value
+    end
+
     def preprocess_exists_filters(intent_hash)
       intent = intent_hash.dup
+      filters_key = intent.key?('filters') ? 'filters' : :filters
 
-      if intent['filters'].is_a?(Array)
-        intent['filters'] = intent['filters'].map do |filter|
-          if filter.is_a?(Hash) && %w[exists not_exists].include?(filter['op'].to_s) && filter['column'].nil?
+      if intent[filters_key].is_a?(Array)
+        intent[filters_key] = intent[filters_key].map do |filter|
+          if filter.is_a?(Hash) && %w[exists not_exists].include?(fetch_value(filter, :op).to_s) && fetch_value(filter, :column).nil?
             filter.merge('column' => 'id')
           else
             filter
@@ -96,7 +122,7 @@ module CodeToQuery
     def enforce_allowlists!(intent, current_user:, allow_tables:)
       # Enforce table allowlist if provided (from user input)
       if Array(allow_tables).any?
-        table = intent['table']
+        table = fetch_value(intent, :table)
         if (table.to_s.strip != '') && !Array(allow_tables).map { |t| t.to_s.downcase }.include?(table.to_s.downcase)
           raise ArgumentError, "Invalid intent: table '#{table}' not allowed"
         end
@@ -106,7 +132,7 @@ module CodeToQuery
       adapter = CodeToQuery.config.policy_adapter
       return unless adapter.respond_to?(:call)
 
-      policy_info = safe_call_policy_adapter(adapter, current_user, table: intent['table'], intent: intent)
+      policy_info = safe_call_policy_adapter(adapter, current_user, table: fetch_value(intent, :table), intent: intent)
       if policy_info.nil?
         return handle_policy_failure('Policy adapter returned nil') if policy_adapter_fail_open?
 
@@ -119,15 +145,15 @@ module CodeToQuery
         raise CodeToQuery::PolicyAdapterError, message
       end
 
-      allowed_tables = Array(policy_info[:allowed_tables] || policy_info['allowed_tables']).map { |t| t.to_s.downcase }
+      allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map { |t| t.to_s.downcase }
       if allowed_tables.any?
-        table = intent['table']
+        table = fetch_value(intent, :table)
         if (table.to_s.strip != '') && !allowed_tables.include?(table.to_s.downcase)
           raise ArgumentError, "Invalid intent: table '#{table}' not permitted by policy"
         end
       end
 
-      allowed_columns = policy_info[:allowed_columns] || policy_info['allowed_columns'] || {}
+      allowed_columns = fetch_value(policy_info, :allowed_columns) || {}
       return if allowed_columns.nil? || allowed_columns.empty?
 
       # Normalize map keys to strings with lowercase table and column names
@@ -136,10 +162,10 @@ module CodeToQuery
         normalized[tbl.to_s.downcase] = Array(cols).map { |c| c.to_s.downcase }
       end
 
-      main_table = intent['table'].to_s.downcase
+      main_table = fetch_value(intent, :table).to_s.downcase
 
       # Columns in SELECT
-      Array(intent['columns']).each do |col|
+      Array(fetch_value(intent, :columns)).each do |col|
         next if col == '*'
         next unless normalized[main_table]&.any?
         unless normalized[main_table].include?(col.to_s.downcase)
@@ -148,8 +174,8 @@ module CodeToQuery
       end
 
       # ORDER BY columns
-      Array(intent['order']).each do |o|
-        col = o['column']
+      Array(fetch_value(intent, :order)).each do |o|
+        col = fetch_value(o, :column)
         next if col.nil?
         next unless normalized[main_table]&.any?
         unless normalized[main_table].include?(col.to_s.downcase)
@@ -158,7 +184,7 @@ module CodeToQuery
       end
 
       # DISTINCT ON columns
-      Array(intent['distinct_on']).each do |col|
+      Array(fetch_value(intent, :distinct_on)).each do |col|
         next unless normalized[main_table]&.any?
         unless normalized[main_table].include?(col.to_s.downcase)
           raise ArgumentError, "Invalid intent: distinct_on column '#{col}' not permitted on '#{main_table}'"
@@ -166,7 +192,7 @@ module CodeToQuery
       end
 
       # GROUP BY
-      Array(intent['group_by']).each do |col|
+      Array(fetch_value(intent, :group_by)).each do |col|
         next unless normalized[main_table]&.any?
         unless normalized[main_table].include?(col.to_s.downcase)
           raise ArgumentError, "Invalid intent: group_by column '#{col}' not permitted on '#{main_table}'"
@@ -174,22 +200,22 @@ module CodeToQuery
       end
 
       # WHERE filters
-      Array(intent['filters']).each do |f|
-        op = f['op'].to_s
+      Array(fetch_value(intent, :filters)).each do |f|
+        op = fetch_value(f, :op).to_s
         if %w[exists not_exists].include?(op)
-          related_table = f['related_table']
+          related_table = fetch_value(f, :related_table)
           rel_cols = normalized[related_table.to_s.downcase]
           next if rel_cols.nil? || rel_cols.empty?
 
-          Array(f['related_filters']).each do |rf|
-            col = rf['column']
+          Array(fetch_value(f, :related_filters)).each do |rf|
+            col = fetch_value(rf, :column)
             next if col.nil?
             unless rel_cols.include?(col.to_s.downcase)
               raise ArgumentError, "Invalid intent: filter column '#{col}' not permitted on '#{related_table}'"
             end
           end
         else
-          col = f['column']
+          col = fetch_value(f, :column)
           next if col.nil?
 
           cols = normalized[main_table]
