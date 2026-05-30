@@ -11,6 +11,7 @@ require 'active_support/core_ext/hash/keys'
 require_relative 'code_to_query/version'
 require_relative 'code_to_query/configuration'
 require_relative 'code_to_query/errors'
+require_relative 'code_to_query/instrumentation'
 require_relative 'code_to_query/providers/base'
 require_relative 'code_to_query/providers/openai'
 require_relative 'code_to_query/providers/local'
@@ -85,11 +86,26 @@ module CodeToQuery
   # Convert natural language to SQL query
   # current_user is optional and only used if a policy_adapter requires it
   def self.ask(prompt:, schema: nil, allow_tables: nil, current_user: nil)
-    intent = Planner.new(config).plan(prompt: prompt, schema: schema, allow_tables: allow_tables)
-    validated_intent = Validator.new.validate(intent, current_user: current_user, allow_tables: allow_tables).deep_stringify_keys
-    compiled = Compiler.new(config).compile(validated_intent, current_user: current_user)
+    intent = Instrumentation.instrument(:plan, allow_tables: allow_tables) do
+      Planner.new(config).plan(prompt: prompt, schema: schema, allow_tables: allow_tables)
+    end
 
-    Guardrails::SqlLinter.new(config, allow_tables: allow_tables).check!(compiled[:sql])
+    validated_intent = Instrumentation.instrument(:validate, table: intent['table'] || intent[:table], query_type: intent['type'] || intent[:type]) do
+      Validator.new.validate(intent, current_user: current_user, allow_tables: allow_tables).deep_stringify_keys
+    end
+
+    compiled = Instrumentation.instrument(:compile, table: validated_intent['table'], query_type: validated_intent['type'], limit: validated_intent['limit']) do
+      Compiler.new(config).compile(validated_intent, current_user: current_user)
+    end
+
+    begin
+      Instrumentation.instrument(:lint, table: validated_intent['table'], query_type: validated_intent['type']) do
+        Guardrails::SqlLinter.new(config, allow_tables: allow_tables).check!(compiled[:sql])
+      end
+    rescue SecurityError => e
+      Instrumentation.instrument(:lint_reject, table: validated_intent['table'], query_type: validated_intent['type'], reason: e.class.name)
+      raise
+    end
 
     Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
               intent: validated_intent, allow_tables: allow_tables, config: config)

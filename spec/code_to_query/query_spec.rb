@@ -166,7 +166,12 @@ RSpec.describe CodeToQuery::Query do
   end
 
   describe '#run' do
-    it 'delegates to Runner' do
+    it 'emits run instrumentation and delegates to Runner' do
+      events = []
+      subscriber = ActiveSupport::Notifications.subscribe('code_to_query.run') do |_name, _started, _finished, _id, payload|
+        events << payload
+      end
+
       runner = instance_double(CodeToQuery::Runner)
       allow(CodeToQuery::Runner).to receive(:new).with(config).and_return(runner)
       allow(runner).to receive(:run).and_return(double)
@@ -174,6 +179,46 @@ RSpec.describe CodeToQuery::Query do
       query.run
 
       expect(runner).to have_received(:run).with(sql: sql, binds: [])
+      expect(events.last).to include(table: 'users', query_type: 'select', policy_applied: false)
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+  end
+
+  describe '#preview' do
+    it 'returns SQL, parameters, policy bind keys, and a local lint decision without executing' do
+      q = described_class.new(
+        sql: sql,
+        params: params.merge('policy_tenant_id' => 42),
+        bind_spec: bind_spec + [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: intent,
+        allow_tables: ['users'],
+        config: config
+      )
+
+      allow(CodeToQuery::Runner).to receive(:new)
+
+      expect(q.preview).to eq(
+        sql: sql,
+        params: params.merge('policy_tenant_id' => 42),
+        applied_policies: ['policy_tenant_id'],
+        estimated_cost: nil,
+        would_run?: true
+      )
+      expect(CodeToQuery::Runner).not_to have_received(:new)
+    end
+
+    it 'reports that unsafe SQL would not run' do
+      q = described_class.new(
+        sql: 'DROP TABLE users',
+        params: {},
+        bind_spec: [],
+        intent: intent,
+        allow_tables: ['users'],
+        config: config
+      )
+
+      expect(q.preview.fetch(:would_run?)).to be false
     end
   end
 

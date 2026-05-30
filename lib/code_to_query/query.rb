@@ -57,28 +57,30 @@ module CodeToQuery
     end
 
     def explain
-      return 'EXPLAIN unavailable (ActiveRecord not loaded)' unless defined?(ActiveRecord::Base)
+      CodeToQuery::Instrumentation.instrument(:explain, telemetry_payload) do
+        next 'EXPLAIN unavailable (ActiveRecord not loaded)' unless defined?(ActiveRecord::Base)
 
-      explain_sql = case @config.adapter
-                    when :postgres, :postgresql
-                      "EXPLAIN (ANALYZE false, VERBOSE false, BUFFERS false) #{@sql}"
-                    when :mysql
-                      "EXPLAIN #{@sql}"
-                    when :sqlite
-                      "EXPLAIN QUERY PLAN #{@sql}"
-                    else
-                      "EXPLAIN #{@sql}"
-                    end
+        explain_sql = case @config.adapter
+                      when :postgres, :postgresql
+                        "EXPLAIN (ANALYZE false, VERBOSE false, BUFFERS false) #{@sql}"
+                      when :mysql
+                        "EXPLAIN #{@sql}"
+                      when :sqlite
+                        "EXPLAIN QUERY PLAN #{@sql}"
+                      else
+                        "EXPLAIN #{@sql}"
+                      end
 
-      result = if @config.readonly_role && ActiveRecord.respond_to?(:connected_to)
-                 ActiveRecord::Base.connected_to(role: @config.readonly_role) do
+        result = if @config.readonly_role && ActiveRecord.respond_to?(:connected_to)
+                   ActiveRecord::Base.connected_to(role: @config.readonly_role) do
+                     ActiveRecord::Base.connection.execute(explain_sql)
+                   end
+                 else
                    ActiveRecord::Base.connection.execute(explain_sql)
                  end
-               else
-                 ActiveRecord::Base.connection.execute(explain_sql)
-               end
 
-      format_explain_result(result)
+        format_explain_result(result)
+      end
     rescue StandardError => e
       "EXPLAIN failed: #{e.message}"
     end
@@ -131,11 +133,58 @@ module CodeToQuery
       raise CodeToQuery::NotRelationConvertibleError, 'Query cannot be expressed as ActiveRecord::Relation'
     end
 
+    def preview
+      {
+        sql: @sql,
+        params: preview_params,
+        applied_policies: applied_policy_keys,
+        estimated_cost: nil,
+        would_run?: preview_would_run?
+      }
+    end
+
     def run
-      Runner.new(@config).run(sql: @sql, binds: binds)
+      CodeToQuery::Instrumentation.instrument(:run, telemetry_payload) do
+        Runner.new(@config).run(sql: @sql, binds: binds)
+      end
     end
 
     private
+
+    def telemetry_payload
+      {
+        table: @intent['table'],
+        query_type: @intent['type'],
+        limit: @intent['limit'],
+        filter_count: Array(@intent['filters']).length,
+        join_count: Array(@intent['joins']).length,
+        policy_applied: applied_policy_keys.any?
+      }
+    end
+
+    def preview_params
+      @params.respond_to?(:deep_dup) ? @params.deep_dup : @params.dup
+    end
+
+    def applied_policy_keys
+      # Policy predicates compiled by CodeToQuery use policy-prefixed bind keys.
+      # Surface only those keys so preview callers can audit policy application
+      # without exposing bind values through telemetry.
+      keys = Array(@bind_spec).filter_map do |bind|
+        key = bind[:key]
+        key.to_s if key.to_s.start_with?('policy_')
+      end
+
+      keys.concat(@params.keys.filter_map { |key| key.to_s if key.to_s.start_with?('policy_') })
+      keys.uniq
+    end
+
+    def preview_would_run?
+      Guardrails::SqlLinter.new(@config, allow_tables: @allow_tables).check!(@sql)
+      true
+    rescue SecurityError
+      false
+    end
 
     def extract_metrics_from_intent(intent)
       data = intent.is_a?(Hash) ? intent['_metrics'] : nil
