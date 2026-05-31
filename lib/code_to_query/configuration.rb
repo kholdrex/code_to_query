@@ -19,7 +19,8 @@ module CodeToQuery
                   :aggregation_limit, :distinct_limit, :exists_limit,
                   :planner_max_attempts, :planner_feedback_mode, :prefer_static_scan,
                   :static_scan_dirs, :context_rag_top_k, :require_limit_by_default,
-                  :explain_fail_open, :policy_adapter_fail_open
+                  :explain_fail_open, :policy_adapter_fail_open,
+                  :sensitive_column_patterns
 
     # Extended configuration knobs (added for LLM transport and logging)
     attr_accessor :logger, :llm_api_base, :llm_timeout, :llm_temperature, :provider_options, :system_prompt_template, :llm_client
@@ -88,6 +89,23 @@ module CodeToQuery
 
       # Guardrail defaults
       @require_limit_by_default = true
+      @sensitive_column_patterns = [
+        /password/i,
+        /passwd/i,
+        /secret/i,
+        /credential/i,
+        /.*_digest\z/i,
+        /.*_salt\z/i,
+        /.*_token\z/i,
+        /\Atoken\z/i,
+        /.*_api_key\z/i,
+        /\Aapi_key\z/i,
+        /\Aaccess_token\z/i,
+        /\Arefresh_token\z/i,
+        /\Aotp_.*/i,
+        /\Aotp\z/i,
+        /.*_otp\z/i
+      ]
     end
   end
 end

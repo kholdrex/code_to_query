@@ -81,6 +81,9 @@ config.enable_explain_gate = true    # Block expensive queries
 config.allow_seq_scans = false       # Prevent table scans
 config.max_query_cost = 10000        # Cost threshold
 config.max_joins = 3                 # Join limit
+config.sensitive_column_patterns |= [ # Omitted from context packs
+  /internal[_-]?credential/i
+]
 ```
 
 ### OpenAI settings
@@ -98,6 +101,17 @@ rails code_to_query:schema       # Extract schema info
 rails code_to_query:scan_app     # Scan models and associations
 rails code_to_query:verify       # Check context pack integrity
 ```
+
+Context generation omits columns whose names match `sensitive_column_patterns`
+by default, including password, token, secret, credential, digest, salt, OTP,
+and API key columns. Because the defaults intentionally favor omission over
+exposure, remove or replace patterns in your initializer if unrelated business
+columns contain those substrings. Add to the default pattern list before running
+bootstrap or schema tasks if your application uses additional sensitive naming
+conventions. Set `config.sensitive_column_patterns = []` if you need to generate
+an unfiltered local context pack for an internal-only environment. The same filter
+also removes index, foreign-key, and check-constraint metadata that references
+sensitive names or definitions.
 
 ## Security features
 
