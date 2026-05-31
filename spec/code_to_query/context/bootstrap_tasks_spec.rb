@@ -5,6 +5,7 @@ require 'json'
 require 'logger'
 require 'rake'
 require 'tmpdir'
+require 'active_record'
 
 RSpec.describe 'CodeToQuery context rake tasks' do
   let(:context_path) { File.join(tmpdir, 'context-pack.json') }
@@ -22,7 +23,7 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   end
 
   after do
-    remove_test_models
+    # Drop fixture tables before restoring any pre-existing connection.
     drop_test_schema
     restore_active_record_connection
     FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir)
@@ -43,6 +44,7 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     expect_no_values(column_names(users), 'password_digest', 'reset_token')
     expect(column_names(orders)).to include('id', 'ctq_user_id', 'total_cents')
     expect_no_values(column_names(orders), 'api_key')
+    expect(flattened_pack_values(pack)).to include('email')
     expect_no_values(flattened_pack_values(pack), 'password-secret', 'reset-secret', 'api-secret')
   end
 
@@ -86,8 +88,6 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   end
 
   def establish_test_connection
-    require 'active_record'
-
     ActiveRecord::Base.establish_connection(connection_config)
   end
 
@@ -163,10 +163,6 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     CtqOrder.belongs_to :ctq_user, class_name: 'CtqUser', foreign_key: 'ctq_user_id'
   end
 
-  def remove_test_models
-    nil
-  end
-
   def configure_context_pack
     CodeToQuery.configure do |config|
       config.context_pack_path = context_path
@@ -237,16 +233,14 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   end
 
   def flattened_pack_values(value)
-    flattened = case value
-                when Hash
-                  value.flat_map { |key, nested_value| [key.to_s, flattened_pack_values(nested_value)] }
-                when Array
-                  value.flat_map { |nested_value| flattened_pack_values(nested_value) }
-                else
-                  value.to_s
-                end
-
-    Array(flattened).flatten
+    case value
+    when Hash
+      value.values.flat_map { |nested_value| flattened_pack_values(nested_value) }
+    when Array
+      value.flat_map { |nested_value| flattened_pack_values(nested_value) }
+    else
+      [value.to_s]
+    end
   end
 
   def expect_no_values(actual, *values)
