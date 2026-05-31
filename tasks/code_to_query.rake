@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require 'fileutils'
+require 'json'
+require 'time'
+
 namespace :code_to_query do
   desc 'Bootstrap complete context pack (schema + app scan + glossary + policies)'
   task bootstrap: :environment do
