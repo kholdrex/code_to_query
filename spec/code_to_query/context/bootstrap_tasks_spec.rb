@@ -238,14 +238,16 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   end
 
   def flattened_pack_values(value)
-    case value
-    when Hash
-      value.flat_map { |key, nested_value| [key.to_s, flattened_pack_values(nested_value)] }
-    when Array
-      value.flat_map { |nested_value| flattened_pack_values(nested_value) }
-    else
-      value.to_s
-    end.flatten
+    flattened = case value
+                when Hash
+                  value.flat_map { |key, nested_value| [key.to_s, flattened_pack_values(nested_value)] }
+                when Array
+                  value.flat_map { |nested_value| flattened_pack_values(nested_value) }
+                else
+                  value.to_s
+                end
+
+    Array(flattened).flatten
   end
 
   def expect_no_values(actual, *values)
