@@ -15,6 +15,25 @@ RSpec.describe CodeToQuery::Guardrails::ExplainGate do
   let(:gate) { described_class.new(config) }
 
   describe '#allowed?' do
+    context 'with default configuration' do
+      let(:default_config) { CodeToQuery::Configuration.send(:new) }
+      let(:default_gate) { described_class.new(default_config) }
+
+      before do
+        ar_base = Class.new do
+          def self.connected?
+            true
+          end
+        end
+        stub_const('ActiveRecord::Base', ar_base)
+        allow(default_gate).to receive(:get_explain_plan).and_raise(StandardError, 'connection error')
+      end
+
+      it 'fails closed when EXPLAIN raises' do
+        expect(default_gate.allowed?('SELECT * FROM users')).to be false
+      end
+    end
+
     context 'when ActiveRecord is not available' do
       before do
         hide_const('ActiveRecord::Base') if defined?(ActiveRecord::Base)

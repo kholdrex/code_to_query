@@ -46,7 +46,7 @@ module CodeToQuery
                              File.join(Dir.pwd, 'db/code_to_query/context.json')
                            end
       @enable_explain_gate = false
-      @explain_fail_open = true
+      @explain_fail_open = false
       @provider = :auto
       @openai_api_key = ENV.fetch('OPENAI_API_KEY', nil)
       @openai_model = 'gpt-4'

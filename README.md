@@ -35,6 +35,7 @@ CodeToQuery.configure do |config|
   config.allow_seq_scans = false
   config.max_query_cost = 10000
   config.require_limit_by_default = true
+  config.explain_fail_open = false # default; set true only for availability-first deployments
 end
 ```
 
@@ -81,9 +82,41 @@ config.enable_explain_gate = true    # Block expensive queries
 config.allow_seq_scans = false       # Prevent table scans
 config.max_query_cost = 10000        # Cost threshold
 config.max_joins = 3                 # Join limit
+config.explain_fail_open = false     # Keep EXPLAIN failures fail-closed
 config.sensitive_column_patterns |= [ # Omitted from context packs
   /internal[_-]?credential/i
 ]
+```
+
+When `enable_explain_gate` is true, EXPLAIN connection, adapter, and parsing
+errors fail closed by default so a degraded reporting database does not turn into
+an unbounded query bypass. Leave `explain_fail_open` unset or `false` for strict
+internal analytics and production dashboards. Set it to `true` only for a
+deliberate availability-first deployment where users may run otherwise safe
+queries when EXPLAIN is temporarily unavailable; pair that choice with readonly
+database credentials, conservative table allowlists, and query timeouts.
+
+Example profiles:
+
+```ruby
+# Strict internal analytics / production dashboard
+config.readonly_role = :reporting
+config.enable_explain_gate = true
+config.explain_fail_open = false
+config.allow_seq_scans = false
+config.max_query_cost = 10_000
+config.force_readonly_session = true
+
+# Developer or test environment with fixture-sized data
+config.enable_explain_gate = false
+config.stub_llm = true
+
+# Availability-first readonly reporting database
+config.readonly_role = :reporting
+config.enable_explain_gate = true
+config.explain_fail_open = true
+config.force_readonly_session = true
+config.query_timeout = 10
 ```
 
 ### OpenAI settings
@@ -144,6 +177,20 @@ config.policy_adapter_fail_open = true
 ```
 
 Leave `policy_adapter_fail_open` unset or `false` for the safe default.
+
+### Upgrading EXPLAIN gate behavior
+
+EXPLAIN gate errors fail closed by default. Existing applications that already
+set `enable_explain_gate = true` and intentionally relied on the older
+availability-first behavior should opt back in explicitly:
+
+```ruby
+config.explain_fail_open = true
+```
+
+Use that setting only when table allowlists, readonly credentials, row limits,
+and database timeouts are strong enough for queries to proceed if EXPLAIN is
+temporarily unavailable.
 
 ### Custom schema
 ```ruby
