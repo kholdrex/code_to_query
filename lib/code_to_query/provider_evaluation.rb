@@ -13,7 +13,7 @@ module CodeToQuery
     attr_reader :cases, :results
 
     def self.load_file(path = DEFAULT_FIXTURE_PATH, config: CodeToQuery.config)
-      data = YAML.safe_load(File.read(path), permitted_classes: [], aliases: false)
+      data = YAML.safe_load_file(path, permitted_classes: [], aliases: false)
       new(data, config: config)
     end
 
