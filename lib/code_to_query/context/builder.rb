@@ -464,7 +464,14 @@ module CodeToQuery
       def extract_table_columns(connection, table_name)
         primary_key_name = connection.primary_key(table_name)
 
-        connection.columns(table_name).map do |col|
+        connection.columns(table_name).filter_map do |col|
+          if sensitive_column?(col.name)
+            if @config.logger.respond_to?(:debug)
+              @config.logger.debug("[code_to_query] Omitting sensitive column #{table_name}.#{col.name}")
+            end
+            next
+          end
+
           is_primary = col.name == primary_key_name
 
           {
@@ -481,6 +488,21 @@ module CodeToQuery
       rescue StandardError => e
         @config.logger.warn("[code_to_query] Failed to extract columns for #{table_name}: #{e.message}")
         []
+      end
+
+      def sensitive_column?(column_name)
+        matches_sensitive_patterns?(column_name)
+      end
+
+      def sensitive_metadata?(value)
+        matches_sensitive_patterns?(value)
+      end
+
+      def matches_sensitive_patterns?(value)
+        text = value.to_s
+        Array(@config.sensitive_column_patterns).any? do |pattern|
+          pattern.is_a?(Regexp) ? pattern.match?(text) : text.downcase.include?(pattern.to_s.downcase)
+        end
       end
 
       def determine_auto_increment(column, connection: nil, is_primary: false)
@@ -517,10 +539,13 @@ module CodeToQuery
       end
 
       def extract_table_indexes(connection, table_name)
-        connection.indexes(table_name).map do |idx|
+        connection.indexes(table_name).filter_map do |idx|
+          columns = Array(idx.columns)
+          next if columns.any? { |column| sensitive_column?(column) } || sensitive_column?(idx.name)
+
           {
             name: idx.name,
-            columns: idx.columns,
+            columns: columns,
             unique: idx.unique,
             partial: idx.try(:where).present?,
             type: idx.try(:type) || 'btree'
@@ -533,7 +558,9 @@ module CodeToQuery
 
       def extract_foreign_keys(connection, table_name)
         if connection.respond_to?(:foreign_keys)
-          connection.foreign_keys(table_name).map do |fk|
+          connection.foreign_keys(table_name).filter_map do |fk|
+            next if sensitive_column?(fk.column) || sensitive_column?(fk.name)
+
             {
               name: fk.name,
               column: fk.column,
@@ -565,6 +592,8 @@ module CodeToQuery
             SQL
 
             check_constraints.each do |row|
+              next if sensitive_column?(row['conname']) || sensitive_metadata?(row['definition'])
+
               constraints << {
                 name: row['conname'],
                 type: 'check',
