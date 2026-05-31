@@ -5,6 +5,7 @@ This file tracks the major changes in each release.
 ## [Unreleased]
 
 ### Added
+- Added deterministic offline provider evaluation fixtures and a `code_to_query:provider:evaluate` task for tracking planner/provider safety regressions.
 - Added a security policy and threat model covering safe deployment defaults, cross-tenant data exposure, schema-context filtering, observability data exposure, and vulnerability reporting.
 
 ### Changed
