@@ -150,8 +150,8 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   end
 
   def define_test_models
-    Object.const_set(:CtqUser, Class.new(ActiveRecord::Base))
-    Object.const_set(:CtqOrder, Class.new(ActiveRecord::Base))
+    stub_const('CtqUser', Class.new(ActiveRecord::Base))
+    stub_const('CtqOrder', Class.new(ActiveRecord::Base))
 
     CtqUser.table_name = 'ctq_users'
     CtqOrder.table_name = 'ctq_orders'
@@ -164,8 +164,7 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   end
 
   def remove_test_models
-    Object.send(:remove_const, :CtqOrder) if Object.const_defined?(:CtqOrder)
-    Object.send(:remove_const, :CtqUser) if Object.const_defined?(:CtqUser)
+    nil
   end
 
   def configure_context_pack
