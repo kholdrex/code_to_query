@@ -153,6 +153,8 @@ sensitive names or definitions.
 - **Performance limits**: EXPLAIN plan analysis and cost thresholds
 - **Readonly execution**: Uses dedicated readonly database connections
 
+For deployment guidance, threat boundaries, and vulnerability reporting, see [SECURITY.md](SECURITY.md).
+
 ## Advanced usage
 
 ### Custom policies
