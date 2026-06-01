@@ -129,10 +129,16 @@ config.stub_llm = false              # Set true for testing
 ## Rake tasks
 
 ```bash
-rails code_to_query:bootstrap    # Generate full context pack
-rails code_to_query:schema       # Extract schema info
-rails code_to_query:scan_app     # Scan models and associations
-rails code_to_query:verify       # Check context pack integrity
+rails code_to_query:bootstrap # Generate full context pack
+rails code_to_query:schema    # Extract schema info
+rails code_to_query:scan_app  # Scan models and associations
+rails code_to_query:verify    # Check context pack integrity
+```
+
+Run the offline provider evaluation task from the gem checkout or host app bundle:
+
+```bash
+bundle exec rake code_to_query:provider:evaluate
 ```
 
 Context generation omits columns whose names match `sensitive_column_patterns`
@@ -145,6 +151,13 @@ conventions. Set `config.sensitive_column_patterns = []` if you need to generate
 an unfiltered local context pack for an internal-only environment. The same filter
 also removes index, foreign-key, and check-constraint metadata that references
 sensitive names or definitions.
+
+The provider evaluation task runs deterministic offline fixtures against the
+planner/provider boundary and reports a pass rate for checks such as table
+allowlists, bounded limits, and params represented as hashes rather than raw
+strings. Treat the score as a regression signal for known prompts, not a guarantee
+of production natural-language quality. Keep real provider smoke tests opt-in and
+run them only with non-sensitive schema and prompts.
 
 ## Security features
 

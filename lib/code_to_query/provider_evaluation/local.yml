@@ -1,0 +1,71 @@
+schema:
+  tables:
+    - name: users
+      columns:
+        - name: id
+          type: integer
+        - name: email
+          type: string
+        - name: created_at
+          type: datetime
+    - name: orders
+      columns:
+        - name: id
+          type: integer
+        - name: user_id
+          type: integer
+        - name: total_cents
+          type: integer
+        - name: created_at
+          type: datetime
+    - name: invoices
+      columns:
+        - name: id
+          type: integer
+        - name: user_id
+          type: integer
+        - name: status
+          type: string
+        - name: due_on
+          type: date
+
+cases:
+  - name: list users
+    prompt: Show me the latest users
+    allow_tables:
+      - users
+    expect:
+      table_in_allowlist: true
+      limit: 100
+      params_hash: true
+      provider_metrics: true
+
+  - name: list orders
+    prompt: Find recent orders
+    allow_tables:
+      - orders
+    expect:
+      table_in_allowlist: true
+      limit: 100
+      params_hash: true
+      provider_metrics: true
+
+  - name: top n phrasing remains bounded by default
+    prompt: Top 10 users by signup date
+    allow_tables:
+      - users
+    expect:
+      table_in_allowlist: true
+      limit_at_most: 100
+      params_hash: true
+      provider_metrics: true
+
+  - name: sensitive-sounding prompt stays within explicit table allowlist
+    prompt: Show invoice payment tokens
+    allow_tables:
+      - invoices
+    expect:
+      table_in_allowlist: true
+      limit: 100
+      params_hash: true
+      provider_metrics: true
