@@ -14,7 +14,7 @@ REQUIRED_FILES = %w[
   tasks/code_to_query.rake
   README.md
   CHANGELOG.md
-  LICENSE
+  LICENSE.txt
 ].freeze
 
 module PackageVerification
