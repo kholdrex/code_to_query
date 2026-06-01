@@ -7,6 +7,21 @@ on:
     branches: [ "main", "master" ]
 
 jobs:
+  verify_package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      - name: Verify packaged gem
+        run: bundle exec rake release:verify_package
+
   test_postgres:
     runs-on: ubuntu-latest
     services:
@@ -33,7 +48,7 @@ jobs:
             ar-gemfile: "activerecord7.2"
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -99,7 +114,7 @@ jobs:
             ar-gemfile: "activerecord7.2"
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -152,7 +167,7 @@ jobs:
             ar-gemfile: "activerecord7.2"
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
