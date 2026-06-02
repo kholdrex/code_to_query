@@ -6,6 +6,7 @@ This file tracks the major changes in each release.
 
 ### Added
 - Added result export helpers for shaping already-returned database results into array-of-hashes, JSON, and CSV strings.
+- Added Pundit policy adapter examples for fail-closed Rails reporting integrations with table allowlists and tenant predicates.
 - Added CI package verification for the built gem artifact, including packaged files, metadata, and loadability from an isolated install path.
 - Added deterministic offline provider evaluation fixtures and a `code_to_query:provider:evaluate` task for tracking planner/provider safety regressions.
 - Added a security policy and threat model covering safe deployment defaults, cross-tenant data exposure, schema-context filtering, observability data exposure, and vulnerability reporting.
