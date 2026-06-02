@@ -4,7 +4,7 @@ A gem that converts natural language questions into SQL queries for Rails apps. 
 
 ## What it does
 
-Instead of writing SQL, your team can ask questions like "Show me top customers by revenue this month" and get back safe, parameterized queries that respect your database policies and security rules.
+Instead of writing SQL, your team can ask questions like "Show me top customers by revenue this month" and get back safe, parameterized queries that respect your database policies and security rules. See [business question examples](docs/business-question-examples.md) for prompt patterns and review checks against a typical B2B SaaS schema.
 
 ## Key features
 
