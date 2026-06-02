@@ -59,6 +59,11 @@ query = CodeToQuery.ask(
 if query.safe?
   results = query.run
   puts "Found #{results.rows.length} results"
+
+  # Shape already-materialized results for export without executing another query
+  hashes = CodeToQuery::ResultExport.to_a(results)
+  json = CodeToQuery::ResultExport.to_json(results)
+  csv = CodeToQuery::ResultExport.to_csv(results)
 end
 
 # Or get the SQL for review
