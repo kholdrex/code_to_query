@@ -198,6 +198,10 @@ config.policy_adapter_fail_open = true
 
 Leave `policy_adapter_fail_open` unset or `false` for the safe default.
 
+For Rails applications that use Pundit-style policies and scopes, see the
+[Pundit policy adapter examples](docs/pundit-policy-adapter.md) for conservative
+table allowlists, tenant/account/user predicates, and logging boundaries.
+
 ### Upgrading EXPLAIN gate behavior
 
 EXPLAIN gate errors fail closed by default. Existing applications that already
