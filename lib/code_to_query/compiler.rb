@@ -274,9 +274,6 @@ module CodeToQuery
       compile_with_string_building(intent, current_user)
     end
 
-    # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockLength, Metrics/CyclomaticComplexity
-    # NOTE: This method is intentionally monolithic for clarity and to avoid regressions in SQL assembly.
-    # TODO: Extract EXISTS/NOT EXISTS handling and simple predicate building into small helpers.
     def compile_with_string_building(intent, current_user = nil)
       table = intent.fetch('table')
       # Detect function columns (e.g., COUNT(*), SUM(amount)) and build proper SELECT list
@@ -326,173 +323,11 @@ module CodeToQuery
       placeholder_index = 1
 
       if (filters = intent['filters']).present?
-        where_fragments = filters.map do |f|
-          col = quote_ident(f['column'])
-          case f['op']
-          when '=', '>', '<', '>=', '<=', '!=', '<>'
-            key = f['param'] || f['column']
-            placeholder = placeholder_for_adapter(placeholder_index)
-            bind_spec << { key: key, column: f['column'], cast: nil }
-            fragment = "#{col} #{f['op']} #{placeholder}"
-            placeholder_index += 1
-            fragment
-          when 'exists'
-            related_table = f['related_table']
-            fk_column = f['fk_column']
-            base_column = f['base_column'] || 'id'
-            related_filters = Array(f['related_filters'])
-
-            raise ArgumentError, 'exists requires related_table and fk_column' if related_table.nil? || fk_column.nil?
-
-            rt = quote_ident(related_table)
-            fk_col = quote_ident(fk_column)
-            base_col = quote_ident(base_column)
-
-            sub_where = []
-            sub_where << "#{rt}.#{fk_col} = #{quote_ident(table)}.#{base_col}"
-
-            # Inject policy predicates for related table if available
-            sub_where, placeholder_index = apply_policy_in_subquery(
-              sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
-            )
-
-            related_filters.each do |rf|
-              rcol = "#{rt}.#{quote_ident(rf['column'])}"
-              case rf['op']
-              when '=', '>', '<', '>=', '<=', '!=', '<>'
-                key = rf['param'] || rf['column']
-                placeholder = placeholder_for_adapter(placeholder_index)
-                bind_spec << ({ key: key, column: rf['column'], cast: nil })
-                sub_where << "#{rcol} #{rf['op']} #{placeholder}"
-                placeholder_index += 1
-              when 'between'
-                start_key = rf['param_start'] || 'start'
-                end_key = rf['param_end'] || 'end'
-                placeholder1 = placeholder_for_adapter(placeholder_index)
-                bind_spec << ({ key: start_key, column: rf['column'], cast: nil })
-                placeholder_index += 1
-                placeholder2 = placeholder_for_adapter(placeholder_index)
-                bind_spec << ({ key: end_key, column: rf['column'], cast: nil })
-                placeholder_index += 1
-                sub_where << "#{rcol} BETWEEN #{placeholder1} AND #{placeholder2}"
-              when 'in'
-                key = rf['param'] || rf['column']
-                values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
-                validate_in_clause_values!(values, rf['column'])
-                placeholder = placeholder_for_adapter(placeholder_index)
-                bind_spec << ({ key: key, column: rf['column'], cast: :array })
-                placeholder_index += 1
-                sub_where << "#{rcol} IN (#{placeholder})"
-              when 'like', 'ilike'
-                key = rf['param'] || rf['column']
-                placeholder = placeholder_for_adapter(placeholder_index)
-                bind_spec << ({ key: key, column: rf['column'], cast: nil })
-                placeholder_index += 1
-                sub_where << "#{rcol} #{rf['op'].upcase} #{placeholder}"
-              else
-                raise ArgumentError, "Unsupported filter op in subquery: #{rf['op']}"
-              end
-            end
-
-            "EXISTS (SELECT 1 FROM #{rt} WHERE #{sub_where.join(' AND ')})"
-          when 'not_exists'
-            # Correlated NOT EXISTS subquery against a related table
-            related_table = f['related_table']
-            fk_column = f['fk_column']
-            base_column = f['base_column'] || 'id'
-            related_filters = Array(f['related_filters'])
-
-            raise ArgumentError, 'not_exists requires related_table and fk_column' if related_table.nil? || fk_column.nil?
-
-            rt = quote_ident(related_table)
-            fk_col = quote_ident(fk_column)
-            base_col = quote_ident(base_column)
-
-            sub_where = []
-            # Correlation predicate
-            sub_where << "#{rt}.#{fk_col} = #{quote_ident(table)}.#{base_col}"
-
-            # Inject policy predicates for related table if available
-            sub_where, placeholder_index = apply_policy_in_subquery(
-              sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
-            )
-
-            # Additional predicates within the subquery
-            related_filters.each do |rf|
-              rcol = "#{rt}.#{quote_ident(rf['column'])}"
-              case rf['op']
-              when '=', '>', '<', '>=', '<=', '!=', '<>'
-                key = rf['param'] || rf['column']
-                placeholder = placeholder_for_adapter(placeholder_index)
-                bind_spec << { key: key, column: rf['column'], cast: nil }
-                sub_where << "#{rcol} #{rf['op']} #{placeholder}"
-                placeholder_index += 1
-              when 'between'
-                start_key = rf['param_start'] || 'start'
-                end_key = rf['param_end'] || 'end'
-
-                placeholder1 = placeholder_for_adapter(placeholder_index)
-                bind_spec << { key: start_key, column: rf['column'], cast: nil }
-                placeholder_index += 1
-
-                placeholder2 = placeholder_for_adapter(placeholder_index)
-                bind_spec << { key: end_key, column: rf['column'], cast: nil }
-                placeholder_index += 1
-
-                sub_where << "#{rcol} BETWEEN #{placeholder1} AND #{placeholder2}"
-              when 'in'
-                key = rf['param'] || rf['column']
-                values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
-                validate_in_clause_values!(values, rf['column'])
-                placeholder = placeholder_for_adapter(placeholder_index)
-                bind_spec << { key: key, column: rf['column'], cast: :array }
-                placeholder_index += 1
-                sub_where << "#{rcol} IN (#{placeholder})"
-              when 'like', 'ilike'
-                key = rf['param'] || rf['column']
-                placeholder = placeholder_for_adapter(placeholder_index)
-                bind_spec << { key: key, column: rf['column'], cast: nil }
-                placeholder_index += 1
-                sub_where << "#{rcol} #{rf['op'].upcase} #{placeholder}"
-              else
-                raise ArgumentError, "Unsupported filter op in subquery: #{rf['op']}"
-              end
-            end
-
-            "NOT EXISTS (SELECT 1 FROM #{rt} WHERE #{sub_where.join(' AND ')})"
-          when 'between'
-            start_key = f['param_start'] || 'start'
-            end_key = f['param_end'] || 'end'
-
-            placeholder1 = placeholder_for_adapter(placeholder_index)
-            bind_spec << { key: start_key, column: f['column'], cast: nil }
-            placeholder_index += 1
-
-            placeholder2 = placeholder_for_adapter(placeholder_index)
-            bind_spec << { key: end_key, column: f['column'], cast: nil }
-            placeholder_index += 1
-
-            "#{col} BETWEEN #{placeholder1} AND #{placeholder2}"
-          when 'in'
-            key = f['param'] || f['column']
-            values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
-            if values.is_a?(Array) && values.empty?
-              raise ArgumentError, "IN clause requires non-empty array for column '#{f['column']}'"
-            end
-
-            placeholder = placeholder_for_adapter(placeholder_index)
-            bind_spec << { key: key, column: f['column'], cast: :array }
-            placeholder_index += 1
-            "#{col} IN (#{placeholder})"
-          when 'like', 'ilike'
-            key = f['param'] || f['column']
-            placeholder = placeholder_for_adapter(placeholder_index)
-            bind_spec << { key: key, column: f['column'], cast: nil }
-            placeholder_index += 1
-            "#{col} #{f['op'].upcase} #{placeholder}"
-          else
-            raise ArgumentError, "Unsupported filter op: #{f['op']}"
-          end
+        where_fragments = filters.map do |filter|
+          fragment, placeholder_index = build_string_filter_fragment(
+            filter, table, bind_spec, params_hash, placeholder_index, current_user
+          )
+          fragment
         end
         sql_parts << "WHERE #{where_fragments.join(' AND ')}" if where_fragments.any?
       end
@@ -527,7 +362,109 @@ module CodeToQuery
 
       { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec }
     end
-    # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockLength, Metrics/CyclomaticComplexity
+
+    def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+      col = quote_ident(filter['column'])
+      case filter['op']
+      when '=', '>', '<', '>=', '<=', '!=', '<>'
+        build_string_comparison_fragment(col, filter, bind_spec, placeholder_index)
+      when 'exists', 'not_exists'
+        build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+      when 'between'
+        build_string_between_fragment(col, filter, bind_spec, placeholder_index)
+      when 'in'
+        key = filter['param'] || filter['column']
+        values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
+        validate_in_clause_values!(values, filter['column'])
+
+        placeholder = placeholder_for_adapter(placeholder_index)
+        bind_spec << { key: key, column: filter['column'], cast: :array }
+        ["#{col} IN (#{placeholder})", placeholder_index + 1]
+      when 'like', 'ilike'
+        build_string_pattern_fragment(col, filter, bind_spec, placeholder_index)
+      else
+        raise ArgumentError, "Unsupported filter op: #{filter['op']}"
+      end
+    end
+
+    def build_string_comparison_fragment(quoted_column, filter, bind_spec, placeholder_index)
+      key = filter['param'] || filter['column']
+      placeholder = placeholder_for_adapter(placeholder_index)
+      bind_spec << { key: key, column: filter['column'], cast: nil }
+      ["#{quoted_column} #{filter['op']} #{placeholder}", placeholder_index + 1]
+    end
+
+    def build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
+      start_key = filter['param_start'] || 'start'
+      end_key = filter['param_end'] || 'end'
+
+      placeholder1 = placeholder_for_adapter(placeholder_index)
+      bind_spec << { key: start_key, column: filter['column'], cast: nil }
+      placeholder_index += 1
+
+      placeholder2 = placeholder_for_adapter(placeholder_index)
+      bind_spec << { key: end_key, column: filter['column'], cast: nil }
+      placeholder_index += 1
+
+      ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index]
+    end
+
+    def build_string_pattern_fragment(quoted_column, filter, bind_spec, placeholder_index)
+      key = filter['param'] || filter['column']
+      placeholder = placeholder_for_adapter(placeholder_index)
+      bind_spec << { key: key, column: filter['column'], cast: nil }
+      ["#{quoted_column} #{filter['op'].upcase} #{placeholder}", placeholder_index + 1]
+    end
+
+    def build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+      related_table = filter['related_table']
+      fk_column = filter['fk_column']
+      base_column = filter['base_column'] || 'id'
+      related_filters = Array(filter['related_filters'])
+      op = filter['op']
+
+      raise ArgumentError, "#{op} requires related_table and fk_column" if related_table.nil? || fk_column.nil?
+
+      rt = quote_ident(related_table)
+      fk_col = quote_ident(fk_column)
+      base_col = quote_ident(base_column)
+
+      sub_where = ["#{rt}.#{fk_col} = #{quote_ident(table)}.#{base_col}"]
+      sub_where, placeholder_index = apply_policy_in_subquery(
+        sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
+      )
+
+      related_filters.each do |related_filter|
+        fragment, placeholder_index = build_string_subquery_filter_fragment(
+          rt, related_filter, bind_spec, params_hash, placeholder_index
+        )
+        sub_where << fragment
+      end
+
+      keyword = op == 'not_exists' ? 'NOT EXISTS' : 'EXISTS'
+      ["#{keyword} (SELECT 1 FROM #{rt} WHERE #{sub_where.join(' AND ')})", placeholder_index]
+    end
+
+    def build_string_subquery_filter_fragment(quoted_related_table, filter, bind_spec, params_hash, placeholder_index)
+      quoted_column = "#{quoted_related_table}.#{quote_ident(filter['column'])}"
+      case filter['op']
+      when '=', '>', '<', '>=', '<=', '!=', '<>'
+        build_string_comparison_fragment(quoted_column, filter, bind_spec, placeholder_index)
+      when 'between'
+        build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
+      when 'in'
+        key = filter['param'] || filter['column']
+        values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
+        validate_in_clause_values!(values, filter['column'])
+        placeholder = placeholder_for_adapter(placeholder_index)
+        bind_spec << { key: key, column: filter['column'], cast: :array }
+        ["#{quoted_column} IN (#{placeholder})", placeholder_index + 1]
+      when 'like', 'ilike'
+        build_string_pattern_fragment(quoted_column, filter, bind_spec, placeholder_index)
+      else
+        raise ArgumentError, "Unsupported filter op in subquery: #{filter['op']}"
+      end
+    end
 
     def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
