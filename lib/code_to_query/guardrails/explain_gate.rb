@@ -5,6 +5,8 @@ begin
 rescue LoadError
 end
 
+require_relative '../instrumentation'
+
 module CodeToQuery
   module Guardrails
     class ExplainGate
@@ -16,19 +18,56 @@ module CodeToQuery
       end
 
       def allowed?(sql)
-        return true unless defined?(ActiveRecord::Base) && ActiveRecord::Base.connected?
+        unless defined?(ActiveRecord::Base)
+          audit_decision(allowed: true, reason: :no_active_record)
+          return true
+        end
+
+        unless ActiveRecord::Base.connected?
+          audit_decision(allowed: true, reason: :not_connected)
+          return true
+        end
 
         plan = get_explain_plan(sql)
-        return true if plan.nil? || plan.empty?
+        if plan.nil? || plan.empty?
+          audit_decision(allowed: true, reason: :empty_plan)
+          return true
+        end
 
-        analyze_plan_safety(plan)
+        allowed = analyze_plan_safety(plan)
+        audit_decision(allowed: allowed, reason: allowed ? :safe_plan : :plan_rejected)
+        allowed
       rescue StandardError => e
-        # Log error; fail-open or fail-closed based on configuration
-        CodeToQuery.config.logger.warn("[code_to_query] ExplainGate error: #{e.message}")
-        !!@config.explain_fail_open
+        # Log only sanitized error metadata; exception messages may include SQL or bind values.
+        CodeToQuery.config.logger.warn("[code_to_query] ExplainGate error: #{e.class.name}")
+        allowed = !!@config.explain_fail_open
+        audit_decision(allowed: allowed, reason: :explain_error, error_class: e.class.name)
+        allowed
       end
 
       private
+
+      def audit_decision(allowed:, reason:, error_class: nil)
+        payload = {
+          adapter: @config.adapter,
+          fail_open: @config.explain_fail_open ? true : false,
+          allowed: allowed,
+          reason: reason,
+          max_query_cost: @config.max_query_cost || DEFAULT_MAX_COST,
+          max_query_rows: @config.max_query_rows || DEFAULT_MAX_ROWS,
+          allow_seq_scans: @config.allow_seq_scans ? true : false,
+          error_class: error_class
+        }.compact
+
+        CodeToQuery::Instrumentation.publish('code_to_query.explain_gate', payload)
+      rescue StandardError => e
+        begin
+          CodeToQuery.config.logger.warn("[code_to_query] ExplainGate audit event failed: #{e.class.name}")
+        rescue StandardError
+          nil
+        end
+        nil
+      end
 
       def get_explain_plan(sql)
         explain_sql = build_explain_query(sql)

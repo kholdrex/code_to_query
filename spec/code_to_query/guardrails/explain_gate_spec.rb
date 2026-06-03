@@ -110,6 +110,158 @@ RSpec.describe CodeToQuery::Guardrails::ExplainGate do
     end
   end
 
+  describe 'audit instrumentation' do
+    let(:events) { [] }
+    let(:subscriber) do
+      ActiveSupport::Notifications.subscribe('code_to_query.explain_gate') do |_name, _started, _finished, _id, payload|
+        events << payload
+      end
+    end
+
+    before do
+      subscriber
+      ar_base = Class.new do
+        def self.connected?
+          true
+        end
+      end
+      stub_const('ActiveRecord::Base', ar_base)
+    end
+
+    after do
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+
+    it 'emits allowed safe-plan metadata' do
+      allow(gate).to receive(:get_explain_plan).and_return(
+        [{ 'QUERY PLAN' => [{ 'Plan' => { 'Node Type' => 'Index Scan', 'Total Cost' => 42, 'Plan Rows' => 7 } }] }]
+      )
+
+      expect(gate.allowed?("SELECT * FROM users WHERE email = 'secret@example.test'")).to be true
+
+      expect(events).to contain_exactly(
+        include(
+          adapter: :postgres,
+          fail_open: true,
+          allowed: true,
+          reason: :safe_plan,
+          max_query_cost: 10_000,
+          max_query_rows: 100_000,
+          allow_seq_scans: false
+        )
+      )
+    end
+
+    it 'emits rejected-plan metadata' do
+      allow(gate).to receive(:get_explain_plan).and_return(
+        [{ 'QUERY PLAN' => [{ 'Plan' => { 'Node Type' => 'Seq Scan', 'Total Cost' => 50_000, 'Plan Rows' => 1_000_000 } }] }]
+      )
+
+      expect(gate.allowed?('SELECT * FROM users')).to be false
+
+      expect(events).to contain_exactly(include(allowed: false, reason: :plan_rejected))
+    end
+
+    it 'emits explain-error metadata for fail-open decisions' do
+      messages = []
+      allow(config.logger).to receive(:warn) { |message| messages << message }
+      allow(gate).to receive(:get_explain_plan).and_raise(
+        StandardError,
+        'connection error for SELECT * FROM secrets'
+      )
+
+      expect(gate.allowed?('SELECT * FROM secrets')).to be true
+
+      expect(events).to contain_exactly(include(allowed: true, reason: :explain_error, fail_open: true,
+                                                error_class: 'StandardError'))
+      expect(messages).to include('[code_to_query] ExplainGate error: StandardError')
+      expect(messages.join('\n')).not_to include('SELECT * FROM secrets')
+      expect(messages.join('\n')).not_to include('connection error for')
+    end
+
+    it 'emits explain-error metadata for fail-closed decisions' do
+      config.explain_fail_open = false
+      allow(gate).to receive(:get_explain_plan).and_raise(StandardError, 'connection error for SELECT * FROM secrets')
+
+      expect(gate.allowed?('SELECT * FROM secrets')).to be false
+
+      expect(events).to contain_exactly(include(allowed: false, reason: :explain_error, fail_open: false,
+                                                error_class: 'StandardError'))
+    end
+
+    it 'does not leak raw SQL, bind values, prompts, row data, or raw plans' do
+      raw_sql = "SELECT * FROM users WHERE email = 'leak@example.test' AND token = 'secret-token'"
+      allow(gate).to receive(:get_explain_plan).and_return(
+        [{ 'QUERY PLAN' => [{ 'Plan' => { 'Node Type' => 'Index Scan', 'Total Cost' => 1, 'Plan Rows' => 1,
+                                          'Filter' => "email = 'leak@example.test'" } }] }]
+      )
+
+      expect(gate.allowed?(raw_sql)).to be true
+
+      payload = events.fetch(0)
+      expect(payload.keys).not_to include(:sql, :prompt, :params, :binds, :bind_values, :rows, :row_data, :plan,
+                                          :raw_plan, :explain_plan)
+      serialized_payload = payload.inspect
+      expect(serialized_payload).not_to include('SELECT * FROM users')
+      expect(serialized_payload).not_to include('leak@example.test')
+      expect(serialized_payload).not_to include('secret-token')
+      expect(serialized_payload).not_to include('Filter')
+    end
+
+    it 'keeps audit subscriber failures from changing safe-plan decisions' do
+      raising_subscriber = ActiveSupport::Notifications.subscribe('code_to_query.explain_gate') do
+        raise 'subscriber should not affect gate decision'
+      end
+      allow(gate).to receive(:get_explain_plan).and_return(
+        [{ 'QUERY PLAN' => [{ 'Plan' => { 'Node Type' => 'Index Scan', 'Total Cost' => 42, 'Plan Rows' => 7 } }] }]
+      )
+
+      expect(gate.allowed?('SELECT * FROM users')).to be true
+      expect(events).to contain_exactly(include(allowed: true, reason: :safe_plan))
+    ensure
+      ActiveSupport::Notifications.unsubscribe(raising_subscriber) if raising_subscriber
+    end
+
+    it 'keeps audit subscriber failures from changing rejected-plan decisions' do
+      raising_subscriber = ActiveSupport::Notifications.subscribe('code_to_query.explain_gate') do
+        raise 'subscriber should not affect gate decision'
+      end
+      allow(gate).to receive(:get_explain_plan).and_return(
+        [{ 'QUERY PLAN' => [{ 'Plan' => { 'Node Type' => 'Seq Scan', 'Total Cost' => 50_000,
+                                          'Plan Rows' => 1_000_000 } }] }]
+      )
+
+      expect(gate.allowed?('SELECT * FROM users')).to be false
+      expect(events).to contain_exactly(include(allowed: false, reason: :plan_rejected))
+    ensure
+      ActiveSupport::Notifications.unsubscribe(raising_subscriber) if raising_subscriber
+    end
+
+    it 'emits no-active-record metadata' do
+      hide_const('ActiveRecord::Base')
+
+      expect(gate.allowed?('SELECT * FROM users')).to be true
+
+      expect(events).to contain_exactly(include(allowed: true, reason: :no_active_record))
+    end
+
+    it 'emits not-connected metadata' do
+      allow(ActiveRecord::Base).to receive(:connected?).and_return(false)
+
+      expect(gate.allowed?('SELECT * FROM users')).to be true
+
+      expect(events).to contain_exactly(include(allowed: true, reason: :not_connected))
+    end
+
+    it 'emits empty-plan metadata' do
+      allow(gate).to receive(:get_explain_plan).and_return([])
+
+      expect(gate.allowed?('SELECT * FROM users')).to be true
+
+      expect(events).to contain_exactly(include(allowed: true, reason: :empty_plan))
+    end
+  end
+
   describe '#build_explain_query' do
     context 'with PostgreSQL adapter' do
       before { config.adapter = :postgres }
