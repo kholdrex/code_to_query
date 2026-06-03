@@ -462,6 +462,40 @@ RSpec.describe CodeToQuery::Compiler do
       end
     end
 
+    context 'with WHERE, GROUP BY, HAVING, ORDER BY, and LIMIT combined' do
+      let(:intent) do
+        {
+          'table' => 'orders',
+          'columns' => ['COUNT(*)'],
+          'filters' => [
+            { 'column' => 'status', 'op' => '=', 'param' => 'status' },
+            { 'column' => 'created_at', 'op' => '>=', 'param' => 'start_date' }
+          ],
+          'group_by' => ['user_id'],
+          'having' => [
+            { 'function' => 'count', 'column' => nil, 'op' => '>', 'param' => 'min_orders' }
+          ],
+          'order' => [{ 'column' => 'user_id', 'dir' => 'desc' }],
+          'limit' => 25,
+          'params' => { 'status' => 'paid', 'start_date' => '2026-01-01', 'min_orders' => 5 }
+        }
+      end
+
+      it 'keeps placeholder and bind ordering stable across clauses' do
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq(
+          'SELECT COUNT(*) as count FROM "orders" WHERE "status" = $1 AND "created_at" >= $2 ' \
+          'GROUP BY "user_id" HAVING COUNT(*) > $3 ORDER BY "user_id" DESC LIMIT 25'
+        )
+        expect(result[:bind_spec]).to eq([
+                                           { key: 'status', column: 'status', cast: nil },
+                                           { key: 'start_date', column: 'created_at', cast: nil },
+                                           { key: 'min_orders', column: nil, cast: nil }
+                                         ])
+      end
+    end
+
     context 'with policy adapter enforcement failures' do
       let(:intent) do
         {

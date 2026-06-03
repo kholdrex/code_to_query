@@ -276,51 +276,11 @@ module CodeToQuery
 
     def compile_with_string_building(intent, current_user = nil)
       table = intent.fetch('table')
-      # Detect function columns (e.g., COUNT(*), SUM(amount)) and build proper SELECT list
-      raw_columns = intent['columns'].presence || ['*']
-      function_specs = Array(raw_columns).map { |c| parse_function_column(c) }.compact
-      columns = if function_specs.any?
-                  # Support single or multiple function projections
-                  function_specs.map do |fn|
-                    func = fn[:func]
-                    col  = fn[:column]
-                    case func
-                    when 'count'
-                      col ? "COUNT(#{quote_ident(col)}) as count" : 'COUNT(*) as count'
-                    when 'sum'
-                      "SUM(#{quote_ident(col)}) as sum"
-                    when 'avg'
-                      "AVG(#{quote_ident(col)}) as avg"
-                    when 'max'
-                      "MAX(#{quote_ident(col)}) as max"
-                    when 'min'
-                      "MIN(#{quote_ident(col)}) as min"
-                    else
-                      quote_ident(col.to_s)
-                    end
-                  end.join(', ')
-                else
-                  Array(raw_columns).map { |c| quote_ident(c) }.join(', ')
-                end
-
-      # Handle DISTINCT
-      distinct_clause = ''
-      if intent['distinct']
-        if intent['distinct_on']&.any?
-          # PostgreSQL DISTINCT ON
-          distinct_on_cols = intent['distinct_on'].map { |c| quote_ident(c) }.join(', ')
-          distinct_clause = "DISTINCT ON (#{distinct_on_cols}) "
-        else
-          distinct_clause = 'DISTINCT '
-        end
-      end
-
-      sql_parts = []
-      sql_parts << "SELECT #{distinct_clause}#{columns} FROM #{quote_ident(table)}"
-
       params_hash = normalize_params_with_model(intent)
       bind_spec = []
       placeholder_index = 1
+
+      sql_parts = [build_string_select_clause(intent, table)]
 
       if (filters = intent['filters']).present?
         where_fragments = filters.map do |filter|
@@ -332,35 +292,105 @@ module CodeToQuery
         sql_parts << "WHERE #{where_fragments.join(' AND ')}" if where_fragments.any?
       end
 
-      if (group_columns = intent['group_by']).present?
-        group_fragments = group_columns.map { |col| quote_ident(col) }
-        sql_parts << "GROUP BY #{group_fragments.join(', ')}"
+      sql_parts << build_string_group_clause(intent['group_by']) if intent['group_by'].present?
+
+      if intent['having'].present?
+        having_clause, placeholder_index = build_string_having_clause(
+          intent['having'], bind_spec, placeholder_index
+        )
+        sql_parts << having_clause
       end
 
-      if (having_filters = intent['having']).present?
-        having_fragments = having_filters.map do |h|
-          agg_expr = build_aggregate_expression(h)
-          placeholder = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: h['param'] || "having_#{h['column']}", column: h['column'], cast: nil }
-          placeholder_index += 1
-          "#{agg_expr} #{h['op']} #{placeholder}"
-        end
-        sql_parts << "HAVING #{having_fragments.join(' AND ')}"
-      end
-
-      if (orders = intent['order']).present?
-        order_fragments = orders.map do |o|
-          dir = o['dir'].to_s.downcase == 'desc' ? 'DESC' : 'ASC'
-          "#{quote_ident(o['column'])} #{dir}"
-        end
-        sql_parts << "ORDER BY #{order_fragments.join(', ')}"
-      end
-
+      sql_parts << build_string_order_clause(intent['order']) if intent['order'].present?
       if (limit = determine_appropriate_limit(intent))
-        sql_parts << "LIMIT #{Integer(limit)}"
+        sql_parts << build_string_limit_clause(limit)
       end
 
       { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec }
+    end
+
+    def build_string_select_clause(intent, table)
+      raw_columns = intent['columns'].presence || ['*']
+      columns = build_string_select_projection(raw_columns)
+      distinct_clause = build_string_distinct_clause(intent)
+
+      "SELECT #{distinct_clause}#{columns} FROM #{quote_ident(table)}"
+    end
+
+    def build_string_select_projection(raw_columns)
+      # Detect function columns (e.g., COUNT(*), SUM(amount)) and build proper SELECT list.
+      function_specs = Array(raw_columns).map { |c| parse_function_column(c) }.compact
+      return Array(raw_columns).map { |c| quote_ident(c) }.join(', ') unless function_specs.any?
+
+      # Support single or multiple function projections.
+      function_specs.map { |fn| build_string_function_projection(fn) }.join(', ')
+    end
+
+    def build_string_function_projection(function_spec)
+      func = function_spec[:func]
+      col = function_spec[:column]
+
+      case func
+      when 'count'
+        col ? "COUNT(#{quote_ident(col)}) as count" : 'COUNT(*) as count'
+      when 'sum'
+        "SUM(#{quote_ident(col)}) as sum"
+      when 'avg'
+        "AVG(#{quote_ident(col)}) as avg"
+      when 'max'
+        "MAX(#{quote_ident(col)}) as max"
+      when 'min'
+        "MIN(#{quote_ident(col)}) as min"
+      else
+        quote_ident(col.to_s)
+      end
+    end
+
+    def build_string_distinct_clause(intent)
+      return '' unless intent['distinct']
+      return 'DISTINCT ' unless intent['distinct_on']&.any?
+
+      distinct_on_cols = intent['distinct_on'].map { |c| quote_ident(c) }.join(', ')
+      "DISTINCT ON (#{distinct_on_cols}) "
+    end
+
+    def build_string_group_clause(group_columns)
+      group_fragments = group_columns.map { |col| quote_ident(col) }
+      "GROUP BY #{group_fragments.join(', ')}"
+    end
+
+    def build_string_having_clause(having_filters, bind_spec, placeholder_index)
+      having_fragments = having_filters.map do |h|
+        fragment, placeholder_index = build_string_having_fragment(h, bind_spec, placeholder_index)
+        fragment
+      end
+
+      ["HAVING #{having_fragments.join(' AND ')}", placeholder_index]
+    end
+
+    def build_string_having_fragment(having_filter, bind_spec, placeholder_index)
+      agg_expr = build_aggregate_expression(having_filter)
+      placeholder = placeholder_for_adapter(placeholder_index)
+      bind_spec << {
+        key: having_filter['param'] || "having_#{having_filter['column']}",
+        column: having_filter['column'],
+        cast: nil
+      }
+
+      ["#{agg_expr} #{having_filter['op']} #{placeholder}", placeholder_index + 1]
+    end
+
+    def build_string_order_clause(orders)
+      order_fragments = orders.map do |order|
+        dir = order['dir'].to_s.downcase == 'desc' ? 'DESC' : 'ASC'
+        "#{quote_ident(order['column'])} #{dir}"
+      end
+
+      "ORDER BY #{order_fragments.join(', ')}"
+    end
+
+    def build_string_limit_clause(limit)
+      "LIMIT #{Integer(limit)}"
     end
 
     def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
