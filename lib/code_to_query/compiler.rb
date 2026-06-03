@@ -170,52 +170,7 @@ module CodeToQuery
                 Arel::Table.new(table_name)
               end
 
-      columns = intent['columns'] || ['*']
-      parsed_functions = Array(columns).map { |c| parse_function_column(c) }.compact
-      if parsed_functions.any?
-        projections = parsed_functions.map do |fn|
-          func = fn[:func]
-          col  = fn[:column]
-          case func
-          when 'count'
-            node = col ? table[col].count : Arel.star.count
-            node.as('count')
-          when 'sum'
-            next unless col
-
-            table[col].sum.as('sum')
-          when 'avg'
-            next unless col
-
-            table[col].average.as('avg')
-          when 'max'
-            next unless col
-
-            table[col].maximum.as('max')
-          when 'min'
-            next unless col
-
-            table[col].minimum.as('min')
-          end
-        end.compact
-        projections = [Arel.star] if projections.empty?
-        query = table.project(*projections)
-      elsif columns == ['*'] || columns.include?('*')
-        query = table.project(Arel.star)
-      else
-        projections = columns.map { |col| table[col] }
-        query = table.project(*projections)
-      end
-
-      if intent['distinct']
-        if intent['distinct_on']&.any?
-          # PostgreSQL DISTINCT ON
-          distinct_columns = intent['distinct_on'].map { |col| table[col] }
-          query = query.distinct(*distinct_columns)
-        else
-          query = query.distinct
-        end
-      end
+      query = build_arel_select_query(intent, table)
 
       params_hash = normalize_params_with_model(intent)
       bind_spec = []
@@ -229,34 +184,11 @@ module CodeToQuery
         end
       end
 
-      if (orders = intent['order']).present?
-        orders.each do |order_spec|
-          column = table[order_spec['column']]
-          direction = order_spec['dir']&.downcase == 'desc' ? :desc : :asc
-          query = query.order(column.send(direction))
-        end
-      end
-
-      if (aggregations = intent['aggregations']).present?
-        query = apply_arel_aggregations(query, table, aggregations)
-      end
-
-      if (group_columns = intent['group_by']).present?
-        group_columns.each do |col|
-          query = query.group(table[col])
-        end
-      end
-
-      if (having_filters = intent['having']).present?
-        having_filters.each do |h|
-          agg_node = build_arel_aggregate(table, h)
-          next unless agg_node
-
-          key = h['param'] || "having_#{h['column']}"
-          bind_spec << { key: key, column: h['column'], cast: nil }
-          condition = build_arel_having_condition(agg_node, h['op'], key)
-          query = query.having(condition) if condition
-        end
+      query = apply_arel_ordering(query, table, intent['order']) if intent['order'].present?
+      query = apply_arel_aggregations(query, table, intent['aggregations']) if intent['aggregations'].present?
+      query = apply_arel_grouping(query, table, intent['group_by']) if intent['group_by'].present?
+      if intent['having'].present?
+        query = apply_arel_having(query, table, intent['having'], bind_spec)
       end
 
       if (limit = determine_appropriate_limit(intent))
@@ -307,6 +239,74 @@ module CodeToQuery
       end
 
       { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec }
+    end
+
+    def build_arel_select_query(intent, table)
+      query = table.project(*build_arel_projections(intent['columns'] || ['*'], table))
+      apply_arel_distinct(query, table, intent)
+    end
+
+    def build_arel_projections(columns, table)
+      parsed_functions = Array(columns).map { |c| parse_function_column(c) }.compact
+      return [Arel.star] if parsed_functions.empty? && (columns == ['*'] || columns.include?('*'))
+      return columns.map { |col| table[col] } if parsed_functions.empty?
+
+      projections = parsed_functions.map { |function_spec| build_arel_function_projection(function_spec, table) }.compact
+      projections.empty? ? [Arel.star] : projections
+    end
+
+    def build_arel_function_projection(function_spec, table)
+      func = function_spec[:func]
+      column = function_spec[:column]
+
+      case func
+      when 'count'
+        node = column ? table[column].count : Arel.star.count
+        node.as('count')
+      when 'sum'
+        table[column].sum.as('sum') if column
+      when 'avg'
+        table[column].average.as('avg') if column
+      when 'max'
+        table[column].maximum.as('max') if column
+      when 'min'
+        table[column].minimum.as('min') if column
+      end
+    end
+
+    def apply_arel_distinct(query, table, intent)
+      return query unless intent['distinct']
+      return query.distinct unless intent['distinct_on']&.any?
+
+      distinct_columns = intent['distinct_on'].map { |col| table[col] }
+      query.distinct(*distinct_columns)
+    end
+
+    def apply_arel_ordering(query, table, orders)
+      orders.each do |order_spec|
+        column = table[order_spec['column']]
+        direction = order_spec['dir']&.downcase == 'desc' ? :desc : :asc
+        query = query.order(column.send(direction))
+      end
+      query
+    end
+
+    def apply_arel_grouping(query, table, group_columns)
+      group_columns.each { |column| query = query.group(table[column]) }
+      query
+    end
+
+    def apply_arel_having(query, table, having_filters, bind_spec)
+      having_filters.each do |having_filter|
+        agg_node = build_arel_aggregate(table, having_filter)
+        next unless agg_node
+
+        key = having_filter['param'] || "having_#{having_filter['column']}"
+        bind_spec << { key: key, column: having_filter['column'], cast: nil }
+        condition = build_arel_having_condition(agg_node, having_filter['op'], key)
+        query = query.having(condition) if condition
+      end
+      query
     end
 
     def build_string_select_clause(intent, table)
