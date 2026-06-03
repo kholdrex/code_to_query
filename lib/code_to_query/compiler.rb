@@ -301,8 +301,8 @@ module CodeToQuery
         agg_node = build_arel_aggregate(table, having_filter)
         next unless agg_node
 
-        key = having_filter['param'] || "having_#{having_filter['column']}"
-        bind_spec << { key: key, column: having_filter['column'], cast: nil }
+        key = having_bind_key(having_filter)
+        append_bind_spec(bind_spec, key: key, column: having_filter['column'])
         condition = build_arel_having_condition(agg_node, having_filter['op'], key)
         query = query.having(condition) if condition
       end
@@ -371,11 +371,11 @@ module CodeToQuery
     def build_string_having_fragment(having_filter, bind_spec, placeholder_index)
       agg_expr = build_aggregate_expression(having_filter)
       placeholder = placeholder_for_adapter(placeholder_index)
-      bind_spec << {
-        key: having_filter['param'] || "having_#{having_filter['column']}",
-        column: having_filter['column'],
-        cast: nil
-      }
+      append_bind_spec(
+        bind_spec,
+        key: having_bind_key(having_filter),
+        column: having_filter['column']
+      )
 
       ["#{agg_expr} #{having_filter['op']} #{placeholder}", placeholder_index + 1]
     end
@@ -403,12 +403,12 @@ module CodeToQuery
       when 'between'
         build_string_between_fragment(col, filter, bind_spec, placeholder_index)
       when 'in'
-        key = filter['param'] || filter['column']
+        key = filter_bind_key(filter)
         values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
         validate_in_clause_values!(values, filter['column'])
 
         placeholder = placeholder_for_adapter(placeholder_index)
-        bind_spec << { key: key, column: filter['column'], cast: :array }
+        append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
         ["#{col} IN (#{placeholder})", placeholder_index + 1]
       when 'like', 'ilike'
         build_string_pattern_fragment(col, filter, bind_spec, placeholder_index)
@@ -418,9 +418,9 @@ module CodeToQuery
     end
 
     def build_string_comparison_fragment(quoted_column, filter, bind_spec, placeholder_index)
-      key = filter['param'] || filter['column']
+      key = filter_bind_key(filter)
       placeholder = placeholder_for_adapter(placeholder_index)
-      bind_spec << { key: key, column: filter['column'], cast: nil }
+      append_bind_spec(bind_spec, key: key, column: filter['column'])
       ["#{quoted_column} #{filter['op']} #{placeholder}", placeholder_index + 1]
     end
 
@@ -429,20 +429,20 @@ module CodeToQuery
       end_key = filter['param_end'] || 'end'
 
       placeholder1 = placeholder_for_adapter(placeholder_index)
-      bind_spec << { key: start_key, column: filter['column'], cast: nil }
+      append_bind_spec(bind_spec, key: start_key, column: filter['column'])
       placeholder_index += 1
 
       placeholder2 = placeholder_for_adapter(placeholder_index)
-      bind_spec << { key: end_key, column: filter['column'], cast: nil }
+      append_bind_spec(bind_spec, key: end_key, column: filter['column'])
       placeholder_index += 1
 
       ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index]
     end
 
     def build_string_pattern_fragment(quoted_column, filter, bind_spec, placeholder_index)
-      key = filter['param'] || filter['column']
+      key = filter_bind_key(filter)
       placeholder = placeholder_for_adapter(placeholder_index)
-      bind_spec << { key: key, column: filter['column'], cast: nil }
+      append_bind_spec(bind_spec, key: key, column: filter['column'])
       ["#{quoted_column} #{filter['op'].upcase} #{placeholder}", placeholder_index + 1]
     end
 
@@ -483,11 +483,11 @@ module CodeToQuery
       when 'between'
         build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
       when 'in'
-        key = filter['param'] || filter['column']
+        key = filter_bind_key(filter)
         values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
         validate_in_clause_values!(values, filter['column'])
         placeholder = placeholder_for_adapter(placeholder_index)
-        bind_spec << { key: key, column: filter['column'], cast: :array }
+        append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
         ["#{quoted_column} IN (#{placeholder})", placeholder_index + 1]
       when 'like', 'ilike'
         build_string_pattern_fragment(quoted_column, filter, bind_spec, placeholder_index)
@@ -512,17 +512,17 @@ module CodeToQuery
           params_hash[start_key] = value.begin
           params_hash[end_key] = value.end
           p1 = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: start_key, column: column, cast: nil }
+          append_bind_spec(bind_spec, key: start_key, column: column)
           placeholder_index += 1
           p2 = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: end_key, column: column, cast: nil }
+          append_bind_spec(bind_spec, key: end_key, column: column)
           placeholder_index += 1
           sub_where << "#{rcol} BETWEEN #{p1} AND #{p2}"
         else
           key = policy_key_prefix
           params_hash[key] = value
           p = placeholder_for_adapter(placeholder_index)
-          bind_spec << { key: key, column: column, cast: nil }
+          append_bind_spec(bind_spec, key: key, column: column)
           placeholder_index += 1
           sub_where << "#{rcol} = #{p}"
         end
@@ -554,12 +554,12 @@ module CodeToQuery
 
       case operator
       when '='
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.eq(Arel::Nodes::BindParam.new(key))
       when '!=', '<>'
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.not_eq(Arel::Nodes::BindParam.new(key))
       when 'exists'
         # Force fallback to string builder for complex correlated subqueries
@@ -568,47 +568,59 @@ module CodeToQuery
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'not_exists Arel compilation is not implemented; falling back to string builder'
       when '>'
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.gt(Arel::Nodes::BindParam.new(key))
       when '>='
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.gteq(Arel::Nodes::BindParam.new(key))
       when '<'
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.lt(Arel::Nodes::BindParam.new(key))
       when '<='
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.lteq(Arel::Nodes::BindParam.new(key))
       when 'between'
         start_key = filter['param_start'] || 'start'
         end_key = filter['param_end'] || 'end'
-        bind_spec << { key: start_key, column: filter['column'], cast: nil }
-        bind_spec << { key: end_key, column: filter['column'], cast: nil }
+        append_bind_spec(bind_spec, key: start_key, column: filter['column'])
+        append_bind_spec(bind_spec, key: end_key, column: filter['column'])
 
         start_param = Arel::Nodes::BindParam.new(start_key)
         end_param = Arel::Nodes::BindParam.new(end_key)
         column.between(start_param..end_param)
       when 'in'
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: :array }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
         column.in(Arel::Nodes::BindParam.new(key))
       when 'like'
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.matches(Arel::Nodes::BindParam.new(key))
       when 'ilike'
-        key = filter['param'] || filter['column']
-        bind_spec << { key: key, column: filter['column'], cast: nil }
+        key = filter_bind_key(filter)
+        append_bind_spec(bind_spec, key: key, column: filter['column'])
         # ilike is PostgreSQL-specific
         Arel::Nodes::Matches.new(column, Arel::Nodes::BindParam.new(key), nil, true)
       else
         warn "[code_to_query] Unsupported Arel operator: #{operator}"
         nil
       end
+    end
+
+    def filter_bind_key(filter)
+      filter['param'] || filter['column']
+    end
+
+    def having_bind_key(having_filter)
+      having_filter['param'] || "having_#{having_filter['column']}"
+    end
+
+    def append_bind_spec(bind_spec, key:, column:, cast: nil)
+      bind_spec << { key: key, column: column, cast: cast }
     end
 
     def placeholder_for_adapter(index)
