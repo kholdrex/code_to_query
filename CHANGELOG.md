@@ -5,6 +5,7 @@ This file tracks the major changes in each release.
 ## [Unreleased]
 
 ### Added
+- Added sanitized EXPLAIN gate audit instrumentation for safe ActiveSupport subscriber logging of decision metadata and thresholds. ExplainGate error logs now record exception classes only so adapter error messages cannot leak SQL or bind fragments.
 - Added result export helpers for shaping already-returned database results into array-of-hashes, JSON, and CSV strings.
 - Added Pundit policy adapter examples for fail-closed Rails reporting integrations with table allowlists and tenant predicates.
 - Added CI package verification for the built gem artifact, including packaged files, metadata, and loadability from an isolated install path.

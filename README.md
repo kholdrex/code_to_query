@@ -216,6 +216,26 @@ Use that setting only when table allowlists, readonly credentials, row limits,
 and database timeouts are strong enough for queries to proceed if EXPLAIN is
 temporarily unavailable.
 
+You can subscribe to sanitized EXPLAIN gate audit events for operational review.
+The payload intentionally omits raw SQL, prompts, bind values, row data, and raw
+EXPLAIN plans; it includes only decision metadata and configured thresholds.
+
+```ruby
+ActiveSupport::Notifications.subscribe('code_to_query.explain_gate') do |_name, _started, _finished, _id, payload|
+  metadata = {
+    adapter: payload[:adapter],
+    allowed: payload[:allowed],
+    reason: payload[:reason],
+    fail_open: payload[:fail_open],
+    max_query_cost: payload[:max_query_cost],
+    max_query_rows: payload[:max_query_rows],
+    allow_seq_scans: payload[:allow_seq_scans]
+  }
+
+  CodeToQuery.config.logger.info("[code_to_query] explain gate decision #{metadata.inspect}")
+end
+```
+
 ### Custom schema
 ```ruby
 schema = {
