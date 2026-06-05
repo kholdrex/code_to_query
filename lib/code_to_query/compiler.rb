@@ -425,8 +425,7 @@ module CodeToQuery
     end
 
     def build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
-      start_key = filter['param_start'] || 'start'
-      end_key = filter['param_end'] || 'end'
+      start_key, end_key = between_bind_keys(filter)
 
       placeholder1 = placeholder_for_adapter(placeholder_index)
       append_bind_spec(bind_spec, key: start_key, column: filter['column'])
@@ -584,8 +583,7 @@ module CodeToQuery
         append_bind_spec(bind_spec, key: key, column: filter['column'])
         column.lteq(Arel::Nodes::BindParam.new(key))
       when 'between'
-        start_key = filter['param_start'] || 'start'
-        end_key = filter['param_end'] || 'end'
+        start_key, end_key = between_bind_keys(filter)
         append_bind_spec(bind_spec, key: start_key, column: filter['column'])
         append_bind_spec(bind_spec, key: end_key, column: filter['column'])
 
@@ -613,6 +611,10 @@ module CodeToQuery
 
     def filter_bind_key(filter)
       filter['param'] || filter['column']
+    end
+
+    def between_bind_keys(filter)
+      [filter['param_start'] || 'start', filter['param_end'] || 'end']
     end
 
     def having_bind_key(having_filter)
