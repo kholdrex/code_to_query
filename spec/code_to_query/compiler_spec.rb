@@ -55,6 +55,51 @@ RSpec.describe CodeToQuery::Compiler do
       end
     end
 
+    context 'with Arel scalar comparison filters' do
+      let(:arel_table) { Arel::Table.new(:users) }
+
+      it 'builds scalar predicates for every comparison operator' do
+        expectations = {
+          '=' => Arel::Nodes::Equality,
+          '!=' => Arel::Nodes::NotEqual,
+          '<>' => Arel::Nodes::NotEqual,
+          '>' => Arel::Nodes::GreaterThan,
+          '>=' => Arel::Nodes::GreaterThanOrEqual,
+          '<' => Arel::Nodes::LessThan,
+          '<=' => Arel::Nodes::LessThanOrEqual
+        }
+
+        expectations.each do |operator, node_class|
+          bind_spec = []
+          filter = { 'column' => 'age', 'op' => operator, 'param' => "age_#{operator}" }
+
+          condition = compiler.__send__(:build_arel_condition, arel_table, filter, bind_spec)
+
+          expect(condition).to be_a(node_class)
+          expect(bind_spec).to eq([{ key: "age_#{operator}", column: 'age', cast: nil }])
+        end
+      end
+
+      it 'preserves bind order across scalar predicates' do
+        bind_spec = []
+        filters = [
+          { 'column' => 'active', 'op' => '=', 'param' => 'is_active' },
+          { 'column' => 'age', 'op' => '>=', 'param' => 'min_age' },
+          { 'column' => 'score', 'op' => '<', 'param' => 'max_score' }
+        ]
+
+        filters.each do |filter|
+          compiler.__send__(:build_arel_condition, arel_table, filter, bind_spec)
+        end
+
+        expect(bind_spec).to eq([
+                                  { key: 'is_active', column: 'active', cast: nil },
+                                  { key: 'min_age', column: 'age', cast: nil },
+                                  { key: 'max_score', column: 'score', cast: nil }
+                                ])
+      end
+    end
+
     context 'with NOT EXISTS anti-join filter' do
       let(:intent) do
         {
