@@ -552,36 +552,14 @@ module CodeToQuery
       operator = filter['op']
 
       case operator
-      when '='
-        key = filter_bind_key(filter)
-        append_bind_spec(bind_spec, key: key, column: filter['column'])
-        column.eq(Arel::Nodes::BindParam.new(key))
-      when '!=', '<>'
-        key = filter_bind_key(filter)
-        append_bind_spec(bind_spec, key: key, column: filter['column'])
-        column.not_eq(Arel::Nodes::BindParam.new(key))
+      when '=', '!=', '<>', '>', '>=', '<', '<='
+        build_arel_scalar_comparison(column, filter, bind_spec)
       when 'exists'
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'exists Arel compilation is not implemented; falling back to string builder'
       when 'not_exists'
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'not_exists Arel compilation is not implemented; falling back to string builder'
-      when '>'
-        key = filter_bind_key(filter)
-        append_bind_spec(bind_spec, key: key, column: filter['column'])
-        column.gt(Arel::Nodes::BindParam.new(key))
-      when '>='
-        key = filter_bind_key(filter)
-        append_bind_spec(bind_spec, key: key, column: filter['column'])
-        column.gteq(Arel::Nodes::BindParam.new(key))
-      when '<'
-        key = filter_bind_key(filter)
-        append_bind_spec(bind_spec, key: key, column: filter['column'])
-        column.lt(Arel::Nodes::BindParam.new(key))
-      when '<='
-        key = filter_bind_key(filter)
-        append_bind_spec(bind_spec, key: key, column: filter['column'])
-        column.lteq(Arel::Nodes::BindParam.new(key))
       when 'between'
         start_key, end_key = between_bind_keys(filter)
         append_bind_spec(bind_spec, key: start_key, column: filter['column'])
@@ -606,6 +584,27 @@ module CodeToQuery
       else
         warn "[code_to_query] Unsupported Arel operator: #{operator}"
         nil
+      end
+    end
+
+    def build_arel_scalar_comparison(column, filter, bind_spec)
+      key = filter_bind_key(filter)
+      bind_param = Arel::Nodes::BindParam.new(key)
+      append_bind_spec(bind_spec, key: key, column: filter['column'])
+
+      case filter['op']
+      when '='
+        column.eq(bind_param)
+      when '!=', '<>'
+        column.not_eq(bind_param)
+      when '>'
+        column.gt(bind_param)
+      when '>='
+        column.gteq(bind_param)
+      when '<'
+        column.lt(bind_param)
+      when '<='
+        column.lteq(bind_param)
       end
     end
 
