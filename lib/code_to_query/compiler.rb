@@ -403,13 +403,7 @@ module CodeToQuery
       when 'between'
         build_string_between_fragment(col, filter, bind_spec, placeholder_index)
       when 'in'
-        key = filter_bind_key(filter)
-        values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
-        validate_in_clause_values!(values, filter['column'])
-
-        placeholder = placeholder_for_adapter(placeholder_index)
-        append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
-        ["#{col} IN (#{placeholder})", placeholder_index + 1]
+        build_string_in_fragment(col, filter, bind_spec, params_hash, placeholder_index)
       when 'like', 'ilike'
         build_string_pattern_fragment(col, filter, bind_spec, placeholder_index)
       else
@@ -436,6 +430,16 @@ module CodeToQuery
       placeholder_index += 1
 
       ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index]
+    end
+
+    def build_string_in_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
+      key = filter_bind_key(filter)
+      values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
+      validate_in_clause_values!(values, filter['column'])
+
+      placeholder = placeholder_for_adapter(placeholder_index)
+      append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
+      ["#{quoted_column} IN (#{placeholder})", placeholder_index + 1]
     end
 
     def build_string_pattern_fragment(quoted_column, filter, bind_spec, placeholder_index)
@@ -482,12 +486,7 @@ module CodeToQuery
       when 'between'
         build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
       when 'in'
-        key = filter_bind_key(filter)
-        values = params_hash[key] || params_hash[key.to_s] || params_hash[key.to_sym]
-        validate_in_clause_values!(values, filter['column'])
-        placeholder = placeholder_for_adapter(placeholder_index)
-        append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
-        ["#{quoted_column} IN (#{placeholder})", placeholder_index + 1]
+        build_string_in_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
       when 'like', 'ilike'
         build_string_pattern_fragment(quoted_column, filter, bind_spec, placeholder_index)
       else
