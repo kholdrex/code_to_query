@@ -77,8 +77,8 @@ RSpec.describe CodeToQuery::Performance::Optimizer do
       result = optimizer.optimize_query(sql)
 
       recommendations = result[:recommendations]
-      expect(recommendations).to include(match(/JOIN/i))
-      expect(recommendations).to include(match(/SELECT \*/))
+      expect(recommendations).to include(include('JOIN'))
+      expect(recommendations).to include(include('SELECT *'))
     end
   end
 
