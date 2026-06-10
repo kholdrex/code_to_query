@@ -133,6 +133,45 @@ RSpec.describe CodeToQuery::Compiler do
       end
     end
 
+    context 'with related subquery IN filter' do
+      let(:intent) do
+        {
+          'type' => 'select',
+          'table' => 'questions',
+          'columns' => ['*'],
+          'filters' => [
+            { 'column' => 'archived', 'op' => '=', 'param' => 'archived' },
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => [
+                { 'column' => 'status', 'op' => 'in', 'param' => 'answer_statuses' }
+              ]
+            }
+          ],
+          'limit' => 100,
+          'params' => { 'archived' => false, 'answer_statuses' => %w[submitted graded] }
+        }
+      end
+
+      it 'preserves subquery IN placeholders and bind order' do
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq(
+          'SELECT * FROM "questions" WHERE "archived" = $1 AND ' \
+          'EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id" ' \
+          'AND "answers"."status" IN ($2)) LIMIT 100'
+        )
+        expect(result[:bind_spec]).to eq([
+                                           { key: 'archived', column: 'archived', cast: nil },
+                                           { key: 'answer_statuses', column: 'status', cast: :array }
+                                         ])
+      end
+    end
+
     context 'with WHERE filters' do
       let(:intent) do
         {
@@ -352,7 +391,29 @@ RSpec.describe CodeToQuery::Compiler do
         result = compiler.compile(intent)
 
         expect(result[:sql]).to include('"status" IN ($1)')
-        expect(result[:bind_spec]).to include(hash_including(key: 'statuses', cast: :array))
+        expect(result[:bind_spec]).to eq([{ key: 'statuses', column: 'status', cast: :array }])
+      end
+
+      it 'preserves placeholder and bind order around top-level IN filters' do
+        intent['filters'] = [
+          { 'column' => 'active', 'op' => '=', 'param' => 'active' },
+          { 'column' => 'status', 'op' => 'in', 'param' => 'statuses' },
+          { 'column' => 'age', 'op' => '>=', 'param' => 'min_age' }
+        ]
+        intent['params'] = {
+          'active' => true,
+          'statuses' => %w[active pending],
+          'min_age' => 18
+        }
+
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to include('WHERE "active" = $1 AND "status" IN ($2) AND "age" >= $3')
+        expect(result[:bind_spec]).to eq([
+                                           { key: 'active', column: 'active', cast: nil },
+                                           { key: 'statuses', column: 'status', cast: :array },
+                                           { key: 'min_age', column: 'age', cast: nil }
+                                         ])
       end
     end
 
