@@ -419,17 +419,12 @@ module CodeToQuery
     end
 
     def build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
-      start_key, end_key = between_bind_keys(filter)
+      append_between_bind_specs(bind_spec, filter)
 
       placeholder1 = placeholder_for_adapter(placeholder_index)
-      append_bind_spec(bind_spec, key: start_key, column: filter['column'])
-      placeholder_index += 1
+      placeholder2 = placeholder_for_adapter(placeholder_index + 1)
 
-      placeholder2 = placeholder_for_adapter(placeholder_index)
-      append_bind_spec(bind_spec, key: end_key, column: filter['column'])
-      placeholder_index += 1
-
-      ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index]
+      ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index + 2]
     end
 
     def build_string_in_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
@@ -560,9 +555,7 @@ module CodeToQuery
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'not_exists Arel compilation is not implemented; falling back to string builder'
       when 'between'
-        start_key, end_key = between_bind_keys(filter)
-        append_bind_spec(bind_spec, key: start_key, column: filter['column'])
-        append_bind_spec(bind_spec, key: end_key, column: filter['column'])
+        start_key, end_key = append_between_bind_specs(bind_spec, filter)
 
         start_param = Arel::Nodes::BindParam.new(start_key)
         end_param = Arel::Nodes::BindParam.new(end_key)
@@ -613,6 +606,14 @@ module CodeToQuery
 
     def between_bind_keys(filter)
       [filter['param_start'] || 'start', filter['param_end'] || 'end']
+    end
+
+    def append_between_bind_specs(bind_spec, filter)
+      start_key, end_key = between_bind_keys(filter)
+      append_bind_spec(bind_spec, key: start_key, column: filter['column'])
+      append_bind_spec(bind_spec, key: end_key, column: filter['column'])
+
+      [start_key, end_key]
     end
 
     def having_bind_key(having_filter)
