@@ -83,45 +83,64 @@ config.max_limit = 10000             # Max allowed limit
 
 ### Security settings
 ```ruby
-config.enable_explain_gate = true    # Block expensive queries
+config.enable_explain_gate = true    # Block expensive/unsafe queries
 config.allow_seq_scans = false       # Prevent table scans
-config.max_query_cost = 10000        # Cost threshold
-config.max_joins = 3                 # Join limit
+config.max_query_cost = 10_000       # Cost threshold
+config.max_joins = 3                # Join limit
 config.explain_fail_open = false     # Keep EXPLAIN failures fail-closed
 config.sensitive_column_patterns |= [ # Omitted from context packs
   /internal[_-]?credential/i
 ]
 ```
 
-When `enable_explain_gate` is true, EXPLAIN connection, adapter, and parsing
-errors fail closed by default so a degraded reporting database does not turn into
-an unbounded query bypass. Leave `explain_fail_open` unset or `false` for strict
-internal analytics and production dashboards. Set it to `true` only for a
-deliberate availability-first deployment where users may run otherwise safe
-queries when EXPLAIN is temporarily unavailable; pair that choice with readonly
-database credentials, conservative table allowlists, and query timeouts.
+### Explain gate defaults and deployment profiles
+
+When `enable_explain_gate` is on, EXPLAIN connection, adapter, and parsing errors
+fail closed by default (`explain_fail_open = false`) so a degraded reporting
+DB does not become a query bypass.
+
+Choose intentionally between strict safety and availability-first behavior:
+
+| Profile | `enable_explain_gate` | `explain_fail_open` | Recommended defaults | Use when |
+| --- | --- | --- | --- | --- |
+| Strict production / internal analytics | `true` | `false` | `allow_seq_scans = false`, `require_limit_by_default = true`, `max_query_cost` tuned to workload, `max_joins` set conservatively, read-only role/session | You want to default to deny unknown risk |
+| Availability-first reporting | `true` | `true` | same as strict + `query_timeout`, explicit allowlists, dedicated read-only credentials, and incident alerting | You must keep low-risk reads available even when plan analysis is temporarily unavailable |
+| Development / offline validation | `false` (or `true` with explicit tests) | `true` optional | low-cost limits may be intentionally reduced in local/non-production contexts | Fixture-sized tests, demos, or when EXPLAIN is unavailable locally |
+
+If you choose availability-first behavior, treat it as an explicit risk tradeoff:
+
+- EXPLAIN failures can let unexpectedly expensive reads proceed.
+- Keep `explain_fail_open = true` behind additional operational guardrails.
+- Log and monitor `code_to_query.explain_gate` failure reasons.
+
+Read-only query sessions, conservative table allowlists, and query timeouts remain the
+core guardrails regardless of profile.
 
 Example profiles:
 
 ```ruby
 # Strict internal analytics / production dashboard
 config.readonly_role = :reporting
+config.force_readonly_session = true
 config.enable_explain_gate = true
 config.explain_fail_open = false
+config.require_limit_by_default = true
 config.allow_seq_scans = false
 config.max_query_cost = 10_000
+config.max_joins = 3
+
+# Availability-first readonly reporting database
+config.readonly_role = :reporting
 config.force_readonly_session = true
+config.enable_explain_gate = true
+config.explain_fail_open = true
+config.allow_seq_scans = false
+config.query_timeout = 10
+config.max_query_cost = 10_000
 
 # Developer or test environment with fixture-sized data
 config.enable_explain_gate = false
 config.stub_llm = true
-
-# Availability-first readonly reporting database
-config.readonly_role = :reporting
-config.enable_explain_gate = true
-config.explain_fail_open = true
-config.force_readonly_session = true
-config.query_timeout = 10
 ```
 
 ### OpenAI settings

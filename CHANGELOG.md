@@ -13,6 +13,7 @@ This file tracks the major changes in each release.
 - Added a security policy and threat model covering safe deployment defaults, cross-tenant data exposure, schema-context filtering, observability data exposure, and vulnerability reporting.
 
 ### Changed
+- Added explicit explain-gate profiles and deployment tradeoff guidance for `explain_fail_open` in the README, including strict, availability-first, and local/test configuration patterns.
 - Breaking default change: EXPLAIN gate errors now fail closed by default; set `explain_fail_open = true` only for availability-first readonly deployments that can tolerate skipped EXPLAIN checks.
 - Context pack generation now omits sensitive schema metadata by default for password, secret, token, credential, digest, salt, OTP, and API key style columns; customize `sensitive_column_patterns` when applications use additional naming conventions.
 - Policy adapter failures now fail closed by default instead of silently omitting enforced predicates; set `policy_adapter_fail_open = true` only when availability must take precedence over row-level policy enforcement.
