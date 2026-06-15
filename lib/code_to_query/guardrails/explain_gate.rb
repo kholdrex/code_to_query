@@ -31,10 +31,10 @@ module CodeToQuery
           allow_seq_scans: @config.allow_seq_scans ? true : false
         }.compact
 
-        CodeToQuery::Instrumentation.instrument(:explain_gate, **payload) do
-          payload[:allowed] = false
-          payload[:reason] = :explain_error
+        payload[:allowed] = false
+        payload[:reason] = :explain_error
 
+        CodeToQuery::Instrumentation.instrument(:explain_gate, payload) do
           unless defined?(ActiveRecord::Base)
             payload[:allowed] = true
             payload[:reason] = :no_active_record
