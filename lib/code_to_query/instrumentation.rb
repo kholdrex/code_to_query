@@ -17,15 +17,19 @@ module CodeToQuery
       safe_payload = payload.compact
 
       started = monotonic_time
-      return publish(event_name, safe_payload, started: started) unless block_given?
+      return publish(event_name, telemetry_payload(safe_payload, started: started), started: started) unless block_given?
 
       result = yield
-      publish(event_name, safe_payload, started: started)
+      publish(event_name, telemetry_payload(safe_payload, started: started), started: started)
       result
     # SecurityError does not inherit from StandardError; keep it explicit so
     # rejected SQL paths still emit sanitized failure telemetry.
     rescue StandardError, SecurityError => e
-      publish(event_name, safe_payload.merge(error_class: e.class.name), started: started) if notifications_available?
+      publish(
+        event_name,
+        telemetry_payload(safe_payload.merge(error_class: e.class.name), started: started),
+        started: started
+      )
       raise
     end
 
@@ -42,6 +46,14 @@ module CodeToQuery
 
     def monotonic_time
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def telemetry_payload(payload, started:)
+      payload.merge(duration_ms: elapsed_ms(started))
+    end
+
+    def elapsed_ms(started_at)
+      ((monotonic_time - started_at) * 1_000).round(3)
     end
   end
 end
