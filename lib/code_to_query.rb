@@ -91,24 +91,54 @@ module CodeToQuery
       Planner.new(config).plan(prompt: prompt, schema: schema, allow_tables: allow_tables)
     end
 
-    validated_intent = Instrumentation.instrument(:validate, table: intent['table'] || intent[:table], query_type: intent['type'] || intent[:type]) do
+    validate_payload = {
+      table: intent['table'] || intent[:table],
+      query_type: intent['type'] || intent[:type],
+      query_shape: query_shape(intent)
+    }
+    validated_intent = Instrumentation.instrument(:validate, **validate_payload) do
       Validator.new.validate(intent, current_user: current_user, allow_tables: allow_tables).deep_stringify_keys
     end
 
-    compiled = Instrumentation.instrument(:compile, table: validated_intent['table'], query_type: validated_intent['type'], limit: validated_intent['limit']) do
+    compile_payload = {
+      table: validated_intent['table'],
+      query_type: validated_intent['type'],
+      limit: validated_intent['limit'],
+      query_shape: query_shape(validated_intent)
+    }
+    compiled = Instrumentation.instrument(:compile, **compile_payload) do
       Compiler.new(config).compile(validated_intent, current_user: current_user)
     end
 
+    lint_payload = {
+      table: validated_intent['table'],
+      query_type: validated_intent['type'],
+      query_shape: query_shape(validated_intent)
+    }
     begin
-      Instrumentation.instrument(:lint, table: validated_intent['table'], query_type: validated_intent['type']) do
+      Instrumentation.instrument(:lint, **lint_payload) do
         Guardrails::SqlLinter.new(config, allow_tables: allow_tables).check!(compiled[:sql])
       end
     rescue SecurityError => e
-      Instrumentation.instrument(:lint_reject, table: validated_intent['table'], query_type: validated_intent['type'], reason: e.class.name)
+      Instrumentation.instrument(
+        :lint_reject,
+        table: validated_intent['table'],
+        query_type: validated_intent['type'],
+        reason: e.class.name,
+        query_shape: query_shape(validated_intent)
+      )
       raise
     end
 
     Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
               intent: validated_intent, allow_tables: allow_tables, config: config)
   end
+
+  def self.query_shape(intent)
+    table = (intent || {})[:table] || (intent || {})['table']
+    query_type = (intent || {})[:type] || (intent || {})['type']
+    [query_type, table].compact.join(':')
+  end
+
+  private_class_method :query_shape
 end

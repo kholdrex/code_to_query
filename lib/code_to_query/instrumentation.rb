@@ -14,8 +14,7 @@ module CodeToQuery
 
     def instrument(stage, payload = {})
       event_name = "code_to_query.#{stage}"
-      safe_payload = payload.compact
-
+      safe_payload = payload
       started = monotonic_time
       return publish(event_name, telemetry_payload(safe_payload, started: started), started: started) unless block_given?
 
