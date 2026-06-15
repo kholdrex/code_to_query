@@ -41,6 +41,11 @@ module CodeToQuery
 
       ActiveSupport::Notifications.publish(event_name, started, monotonic_time, SecureRandom.uuid, payload)
       nil
+    rescue StandardError, SecurityError => e
+      # Instrumentation is intentionally non-blocking. Subscriber failures should never
+      # change behavior, so log and continue.
+      CodeToQuery.config.logger.warn("[code_to_query] Telemetry publish failed: #{e.class.name}")
+      nil
     end
 
     def monotonic_time
