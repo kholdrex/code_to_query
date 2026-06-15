@@ -105,7 +105,7 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     File.write(context_path, '{"schema": {"tables": []}}')
     existing_pack_contents = File.read(context_path)
 
-    expect(File).to receive(:delete).with(context_path).and_call_original
+    allow(File).to receive(:delete).and_call_original
 
     output = capture_stdout { invoke_task('code_to_query:rebuild') }
 
@@ -113,6 +113,7 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     expect(pack.dig('schema', 'tables')).to be_an(Array)
     expect(pack.dig('schema', 'tables')).not_to be_empty
     expect(File.read(context_path)).not_to eq(existing_pack_contents)
+    expect(File).to have_received(:delete).with(context_path)
     expect(output).to include('Rebuilding context pack...')
   end
 
