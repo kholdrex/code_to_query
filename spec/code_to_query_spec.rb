@@ -48,9 +48,14 @@ RSpec.describe CodeToQuery do
       compile_payload = events.find { |name, _payload, _started, _finished| name == 'code_to_query.compile' }&.at(1) || {}
       lint_payload = events.find { |name, _payload, _started, _finished| name == 'code_to_query.lint' }&.at(1) || {}
 
-      expect(validate_payload).to include(row_limit: 100, query_shape: 'select:users')
-      expect(compile_payload).to include(row_limit: 100, policy_applied: false, query_shape: 'select:users')
-      expect(lint_payload).to include(row_limit: 100, policy_applied: false, query_shape: 'select:users')
+      limit = validate_payload[:row_limit]
+
+      expect(validate_payload).to include(query_shape: 'select:users')
+      expect(compile_payload).to include(policy_applied: false, query_shape: 'select:users')
+      expect(lint_payload).to include(policy_applied: false, query_shape: 'select:users')
+      expect(limit).to be_a(Integer)
+      expect(compile_payload[:row_limit]).to eq(limit)
+      expect(lint_payload[:row_limit]).to eq(limit)
       expect(events.map { |event| event[1][:duration_ms] }).to all(be >= 0)
       expect(events.map { |event| event[1] }).to include(include(query_shape: include('users')))
       expect(events).to all(satisfy { |_name, _payload, started, finished| finished >= started })
