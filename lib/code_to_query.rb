@@ -109,7 +109,7 @@ module CodeToQuery
       row_limit: validated_intent['limit'],
       policy_applied: false
     }
-    compiled = Instrumentation.instrument(:compile, **compile_payload) do
+    compiled = Instrumentation.instrument(:compile, compile_payload) do
       compile_result = Compiler.new(config).compile(validated_intent, current_user: current_user)
       compile_payload[:policy_applied] = policy_applied_from_bind_spec?(compile_result[:bind_spec])
       compile_result

@@ -69,6 +69,50 @@ RSpec.describe CodeToQuery do
       expect(query).to be_a(CodeToQuery::Query)
     end
 
+    # rubocop:disable RSpec/ExampleLength
+    it 'marks compile/lint telemetry as policy-applied when policy binds are present' do
+      events = []
+      subscriber = ActiveSupport::Notifications.subscribe(/\Acode_to_query\./) do |name, started, finished, _id, payload|
+        events << [name, payload, started, finished]
+      end
+
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+      linter = instance_double(CodeToQuery::Guardrails::SqlLinter)
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(CodeToQuery::Guardrails::SqlLinter).to receive(:new).and_return(linter)
+
+      allow(planner).to receive(:plan).and_return(sample_intent)
+      allow(validator).to receive(:validate).and_return(sample_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT users.* FROM users WHERE users.tenant_id = $1',
+        params: { 'policy_tenant_id' => 42 },
+        bind_spec: [
+          {
+            key: 'policy_tenant_id',
+            column: 'tenant_id',
+            cast: nil
+          }
+        ]
+      )
+      allow(linter).to receive(:check!)
+
+      described_class.ask(prompt: 'Get users', allow_tables: ['users'])
+
+      compile_payload = events.find { |name, _payload, _started, _finished| name == 'code_to_query.compile' }&.at(1) || {}
+      lint_payload = events.find { |name, _payload, _started, _finished| name == 'code_to_query.lint' }&.at(1) || {}
+
+      expect(compile_payload).to include(policy_applied: true, query_shape: 'select:users')
+      expect(lint_payload).to include(policy_applied: true, query_shape: 'select:users')
+    ensure
+      ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+    # rubocop:enable RSpec/ExampleLength
+
     it 'passes parameters to the planner' do
       planner = instance_double(CodeToQuery::Planner)
       allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
