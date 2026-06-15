@@ -155,10 +155,13 @@ module CodeToQuery
       {
         table: @intent['table'],
         query_type: @intent['type'],
+        query_shape: [@intent['type'], @intent['table']].compact.join(':'),
         limit: @intent['limit'],
+        row_limit: @intent['limit'],
         filter_count: Array(@intent['filters']).length,
         join_count: Array(@intent['joins']).length,
-        policy_applied: applied_policy_keys.any?
+        policy_applied: applied_policy_keys.any?,
+        bind_count: Array(@bind_spec).length
       }
     end
 

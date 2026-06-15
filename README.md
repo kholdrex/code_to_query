@@ -236,6 +236,28 @@ ActiveSupport::Notifications.subscribe('code_to_query.explain_gate') do |_name, 
 end
 ```
 
+```ruby
+ActiveSupport::Notifications.subscribe(/\Acode_to_query\./) do |_name, _started, _finished, _id, payload|
+  telemetry = {
+    table: payload[:table],
+    query_type: payload[:query_type],
+    query_shape: payload[:query_shape],
+    limit: payload[:limit],
+    row_limit: payload[:row_limit],
+    policy_applied: payload[:policy_applied],
+    bind_count: payload[:bind_count],
+    filter_count: payload[:filter_count],
+    join_count: payload[:join_count],
+    duration_ms: payload[:duration_ms],
+    failure_reason: payload[:reason],
+    allowed: payload[:allowed],
+    error_class: payload[:error_class]
+  }
+
+  CodeToQuery.config.logger.info("[code_to_query] pipeline telemetry #{telemetry.compact}")
+end
+```
+
 ### Custom schema
 ```ruby
 schema = {

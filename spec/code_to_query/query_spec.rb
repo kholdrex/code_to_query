@@ -179,7 +179,15 @@ RSpec.describe CodeToQuery::Query do
       query.run
 
       expect(runner).to have_received(:run).with(sql: sql, binds: [])
-      expect(events.last).to include(table: 'users', query_type: 'select', policy_applied: false)
+      expect(events.last).to include(
+        table: 'users',
+        query_type: 'select',
+        query_shape: 'select:users',
+        policy_applied: false,
+        bind_count: 1,
+        row_limit: nil,
+        duration_ms: a_kind_of(Numeric)
+      )
     ensure
       ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
     end

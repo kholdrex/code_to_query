@@ -42,6 +42,9 @@ RSpec.describe CodeToQuery do
       expect(events.map { |event| event[1] }).not_to include(include(prompt: 'Get users'))
       expect(events.map { |event| event[1] }).not_to include(include(:sql))
       expect(events.map { |event| event[1] }).not_to include(include(:params))
+      expect(events.map { |event| event[1] }).to all(include(duration_ms: a_kind_of(Numeric)))
+      expect(events.map { |event| event[1][:duration_ms] }).to all(be >= 0)
+      expect(events.map { |event| event[1] }).to include(include(query_shape: include('users')))
       expect(events).to all(satisfy { |_name, _payload, started, finished| finished >= started })
     ensure
       ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
