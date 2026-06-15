@@ -137,12 +137,26 @@ RSpec.describe CodeToQuery::Guardrails::ExplainGate do
         [{ 'QUERY PLAN' => [{ 'Plan' => { 'Node Type' => 'Index Scan', 'Total Cost' => 42, 'Plan Rows' => 7 } }] }]
       )
 
-      expect(gate.allowed?("SELECT * FROM users WHERE email = 'secret@example.test'")).to be true
+      expect(
+        gate.allowed?(
+          "SELECT * FROM users WHERE email = 'secret@example.test'",
+          table: 'users',
+          query_type: 'select',
+          query_shape: 'select:users',
+          row_limit: 100,
+          policy_applied: false
+        )
+      ).to be true
 
       expect(events).to contain_exactly(
         include(
           adapter: :postgres,
           fail_open: true,
+          table: 'users',
+          query_type: 'select',
+          query_shape: 'select:users',
+          row_limit: 100,
+          policy_applied: false,
           allowed: true,
           reason: :safe_plan,
           max_query_cost: 10_000,
@@ -150,6 +164,7 @@ RSpec.describe CodeToQuery::Guardrails::ExplainGate do
           allow_seq_scans: false
         )
       )
+      expect(events.first).to include(duration_ms: a_kind_of(Numeric))
     end
 
     it 'emits rejected-plan metadata' do

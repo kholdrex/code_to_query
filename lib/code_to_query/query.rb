@@ -155,14 +155,18 @@ module CodeToQuery
       {
         table: @intent['table'],
         query_type: @intent['type'],
-        query_shape: [@intent['type'], @intent['table']].compact.join(':'),
+        query_shape: query_shape,
         limit: @intent['limit'],
         row_limit: @intent['limit'],
         filter_count: Array(@intent['filters']).length,
         join_count: Array(@intent['joins']).length,
-        policy_applied: applied_policy_keys.any?,
+        policy_applied: policy_applied?,
         bind_count: Array(@bind_spec).length
       }
+    end
+
+    def query_shape
+      [@intent['type'], @intent['table']].compact.join(':')
     end
 
     def preview_params
@@ -180,6 +184,10 @@ module CodeToQuery
 
       keys.concat(@params.keys.filter_map { |key| key.to_s if key.to_s.start_with?('policy_') })
       keys.uniq
+    end
+
+    def policy_applied?
+      applied_policy_keys.any?
     end
 
     def preview_would_run?
@@ -206,7 +214,14 @@ module CodeToQuery
       Guardrails::SqlLinter.new(@config, allow_tables: @allow_tables).check!(@sql)
 
       # EXPLAIN-based performance checks
-      return false if @config.enable_explain_gate && !Guardrails::ExplainGate.new(@config).allowed?(@sql)
+      return false if @config.enable_explain_gate && !Guardrails::ExplainGate.new(@config).allowed?(
+        @sql,
+        query_shape: query_shape,
+        table: @intent['table'],
+        query_type: @intent['type'],
+        row_limit: @intent['limit'],
+        policy_applied: policy_applied?
+      )
 
       # Policy enforcement
       return false if @config.policy_adapter && !check_policy_compliance

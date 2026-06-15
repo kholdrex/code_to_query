@@ -94,7 +94,8 @@ module CodeToQuery
     validate_payload = {
       table: intent['table'] || intent[:table],
       query_type: intent['type'] || intent[:type],
-      query_shape: query_shape(intent)
+      query_shape: query_shape(intent),
+      row_limit: (intent['limit'] || intent[:limit])
     }
     validated_intent = Instrumentation.instrument(:validate, **validate_payload) do
       Validator.new.validate(intent, current_user: current_user, allow_tables: allow_tables).deep_stringify_keys
@@ -104,16 +105,24 @@ module CodeToQuery
       table: validated_intent['table'],
       query_type: validated_intent['type'],
       limit: validated_intent['limit'],
-      query_shape: query_shape(validated_intent)
+      query_shape: query_shape(validated_intent),
+      row_limit: validated_intent['limit'],
+      policy_applied: false
     }
     compiled = Instrumentation.instrument(:compile, **compile_payload) do
-      Compiler.new(config).compile(validated_intent, current_user: current_user)
+      compile_result = Compiler.new(config).compile(validated_intent, current_user: current_user)
+      compile_payload[:policy_applied] = policy_applied_from_bind_spec?(compile_result[:bind_spec])
+      compile_result
     end
+
+    policy_applied = compile_payload[:policy_applied]
 
     lint_payload = {
       table: validated_intent['table'],
       query_type: validated_intent['type'],
-      query_shape: query_shape(validated_intent)
+      query_shape: query_shape(validated_intent),
+      row_limit: validated_intent['limit'],
+      policy_applied: policy_applied
     }
     begin
       Instrumentation.instrument(:lint, **lint_payload) do
@@ -124,6 +133,8 @@ module CodeToQuery
         :lint_reject,
         table: validated_intent['table'],
         query_type: validated_intent['type'],
+        row_limit: validated_intent['limit'],
+        policy_applied: policy_applied,
         reason: e.class.name,
         query_shape: query_shape(validated_intent)
       )
@@ -140,5 +151,13 @@ module CodeToQuery
     [query_type, table].compact.join(':')
   end
 
+  def self.policy_applied_from_bind_spec?(bind_spec)
+    Array(bind_spec).any? do |bind|
+      key = bind.is_a?(Hash) ? (bind[:key] || bind['key']) : nil
+      key.to_s.start_with?('policy_')
+    end
+  end
+
   private_class_method :query_shape
+  private_class_method :policy_applied_from_bind_spec?
 end

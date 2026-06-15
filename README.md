@@ -224,12 +224,18 @@ EXPLAIN plans; it includes only decision metadata and configured thresholds.
 ActiveSupport::Notifications.subscribe('code_to_query.explain_gate') do |_name, _started, _finished, _id, payload|
   metadata = {
     adapter: payload[:adapter],
+    table: payload[:table],
+    query_type: payload[:query_type],
+    query_shape: payload[:query_shape],
+    row_limit: payload[:row_limit],
+    policy_applied: payload[:policy_applied],
     allowed: payload[:allowed],
     reason: payload[:reason],
     fail_open: payload[:fail_open],
     max_query_cost: payload[:max_query_cost],
     max_query_rows: payload[:max_query_rows],
-    allow_seq_scans: payload[:allow_seq_scans]
+    allow_seq_scans: payload[:allow_seq_scans],
+    duration_ms: payload[:duration_ms]
   }
 
   CodeToQuery.config.logger.info("[code_to_query] explain gate decision #{metadata.inspect}")
