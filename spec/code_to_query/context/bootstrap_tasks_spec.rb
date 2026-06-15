@@ -6,6 +6,7 @@ require 'logger'
 require 'rake'
 require 'tmpdir'
 require 'active_record'
+require 'stringio'
 
 RSpec.describe 'CodeToQuery context rake tasks' do
   let(:context_path) { File.join(tmpdir, 'context-pack.json') }
@@ -48,6 +49,27 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     expect_no_values(flattened_pack_values(pack), 'password-secret', 'reset-secret', 'api-secret')
   end
 
+  it 'prints context pack metadata through code_to_query:info with empty state' do
+    File.delete(context_path) if File.exist?(context_path)
+    output = capture_stdout { invoke_task('code_to_query:info') }
+
+    expect(output).to include('CodeToQuery Context Pack Information')
+    expect(output).to include('Configuration:')
+    expect(output).to include('Database adapter:')
+    expect(output).to include('OpenAI model:')
+  end
+
+  it 'prints context pack details through code_to_query:info when a pack exists' do
+    invoke_task('code_to_query:bootstrap')
+    output = capture_stdout { invoke_task('code_to_query:info') }
+
+    expect(output).to include('CodeToQuery Context Pack Information')
+    expect(output).to include('Database Schema:')
+    expect(output).to include('Tables:')
+    expect(output).to include('Rails Models:')
+    expect(output).to include('OpenAI model:')
+  end
+
   it 'writes model metadata through code_to_query:scan_app' do
     invoke_task('code_to_query:scan_app')
 
@@ -77,6 +99,22 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     expect_no_values(flattened_pack_values(pack), 'password_digest', 'reset_token', 'api_key')
 
     expect { invoke_task('code_to_query:verify') }.not_to raise_error
+  end
+
+  it 'rebuild removes existing context pack before running bootstrap' do
+    File.write(context_path, '{"schema": {"tables": []}}')
+    existing_pack_contents = File.read(context_path)
+
+    allow(File).to receive(:delete).and_call_original
+
+    output = capture_stdout { invoke_task('code_to_query:rebuild') }
+
+    pack = read_context_pack
+    expect(pack.dig('schema', 'tables')).to be_an(Array)
+    expect(pack.dig('schema', 'tables')).not_to be_empty
+    expect(File.read(context_path)).not_to eq(existing_pack_contents)
+    expect(File).to have_received(:delete).with(context_path)
+    expect(output).to include('Rebuilding context pack...')
   end
 
   it 'raises from builder verification when schema tables are missing' do
@@ -218,6 +256,18 @@ RSpec.describe 'CodeToQuery context rake tasks' do
   def invoke_task(task_name)
     Rake::Task[task_name].reenable
     Rake::Task[task_name].invoke
+  end
+
+  def capture_stdout
+    previous_stdout = $stdout
+    io = StringIO.new
+    $stdout = io
+
+    yield
+
+    io.string
+  ensure
+    $stdout = previous_stdout
   end
 
   def read_context_pack
