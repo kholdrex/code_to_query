@@ -49,11 +49,25 @@ RSpec.describe 'CodeToQuery context rake tasks' do
     expect_no_values(flattened_pack_values(pack), 'password-secret', 'reset-secret', 'api-secret')
   end
 
-  it 'prints friendly guidance when code_to_query:info has no context pack' do
+  it 'prints context pack metadata through code_to_query:info with empty state' do
+    File.delete(context_path) if File.exist?(context_path)
     output = capture_stdout { invoke_task('code_to_query:info') }
 
-    expect(output).to include('Could not load context pack')
-    expect(output).to include("Run 'rake code_to_query:bootstrap' to create it.")
+    expect(output).to include('CodeToQuery Context Pack Information')
+    expect(output).to include('Configuration:')
+    expect(output).to include('Database adapter:')
+    expect(output).to include('OpenAI model:')
+  end
+
+  it 'prints context pack details through code_to_query:info when a pack exists' do
+    invoke_task('code_to_query:bootstrap')
+    output = capture_stdout { invoke_task('code_to_query:info') }
+
+    expect(output).to include('CodeToQuery Context Pack Information')
+    expect(output).to include('Database Schema:')
+    expect(output).to include('Tables:')
+    expect(output).to include('Rails Models:')
+    expect(output).to include('OpenAI model:')
   end
 
   it 'writes model metadata through code_to_query:scan_app' do
@@ -89,12 +103,17 @@ RSpec.describe 'CodeToQuery context rake tasks' do
 
   it 'rebuild removes existing context pack before running bootstrap' do
     File.write(context_path, '{"schema": {"tables": []}}')
+    existing_pack_contents = File.read(context_path)
 
-    invoke_task('code_to_query:rebuild')
+    expect(File).to receive(:delete).with(context_path).and_call_original
+
+    output = capture_stdout { invoke_task('code_to_query:rebuild') }
 
     pack = read_context_pack
     expect(pack.dig('schema', 'tables')).to be_an(Array)
     expect(pack.dig('schema', 'tables')).not_to be_empty
+    expect(File.read(context_path)).not_to eq(existing_pack_contents)
+    expect(output).to include('Rebuilding context pack...')
   end
 
   it 'raises from builder verification when schema tables are missing' do
