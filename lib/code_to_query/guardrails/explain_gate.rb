@@ -66,6 +66,7 @@ module CodeToQuery
           payload[:allowed]
         end
       end
+
       private
 
       def get_explain_plan(sql)

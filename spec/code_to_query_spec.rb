@@ -24,6 +24,7 @@ RSpec.describe CodeToQuery do
       stub_config(stub_llm: true, provider: :local)
     end
 
+    # rubocop:disable RSpec/MultipleExpectations
     it 'emits non-sensitive pipeline instrumentation' do
       events = []
       subscriber = ActiveSupport::Notifications.subscribe(/\Acode_to_query\./) do |name, started, finished, _id, payload|
@@ -56,6 +57,7 @@ RSpec.describe CodeToQuery do
     ensure
       ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
     end
+    # rubocop:enable RSpec/MultipleExpectations
 
     it 'returns a Query object' do
       query = described_class.ask(prompt: 'Get users', allow_tables: ['users'])

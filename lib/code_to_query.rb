@@ -95,7 +95,7 @@ module CodeToQuery
       table: intent['table'] || intent[:table],
       query_type: intent['type'] || intent[:type],
       query_shape: query_shape(intent),
-      row_limit: (intent['limit'] || intent[:limit])
+      row_limit: intent['limit'] || intent[:limit]
     }
     validated_intent = Instrumentation.instrument(:validate, **validate_payload) do
       Validator.new.validate(intent, current_user: current_user, allow_tables: allow_tables).deep_stringify_keys
