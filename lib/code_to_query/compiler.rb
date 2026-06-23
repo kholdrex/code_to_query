@@ -177,7 +177,7 @@ module CodeToQuery
 
       if (filters = intent['filters']).present?
         where_conditions = filters.map do |filter|
-          build_arel_condition(table, filter, bind_spec)
+          build_arel_condition(table, filter, bind_spec, params_hash)
         end
         where_conditions.compact.each do |condition|
           query = query.where(condition)
@@ -401,7 +401,7 @@ module CodeToQuery
       when 'exists', 'not_exists'
         build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
       when 'between'
-        build_string_between_fragment(col, filter, bind_spec, placeholder_index)
+        build_string_between_fragment(col, filter, bind_spec, params_hash, placeholder_index)
       when 'in'
         build_string_in_fragment(col, filter, bind_spec, params_hash, placeholder_index)
       when 'like', 'ilike'
@@ -418,8 +418,8 @@ module CodeToQuery
       ["#{quoted_column} #{filter['op']} #{placeholder}", placeholder_index + 1]
     end
 
-    def build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
-      append_between_bind_specs(bind_spec, filter)
+    def build_string_between_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
+      append_between_bind_specs(bind_spec, filter, params_hash)
 
       placeholder1 = placeholder_for_adapter(placeholder_index)
       placeholder2 = placeholder_for_adapter(placeholder_index + 1)
@@ -479,7 +479,7 @@ module CodeToQuery
       when '=', '>', '<', '>=', '<=', '!=', '<>'
         build_string_comparison_fragment(quoted_column, filter, bind_spec, placeholder_index)
       when 'between'
-        build_string_between_fragment(quoted_column, filter, bind_spec, placeholder_index)
+        build_string_between_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
       when 'in'
         build_string_in_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
       when 'like', 'ilike'
@@ -541,7 +541,7 @@ module CodeToQuery
       value.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
     end
 
-    def build_arel_condition(table, filter, bind_spec)
+    def build_arel_condition(table, filter, bind_spec, params_hash = nil)
       column = table[filter['column']]
       operator = filter['op']
 
@@ -555,7 +555,7 @@ module CodeToQuery
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'not_exists Arel compilation is not implemented; falling back to string builder'
       when 'between'
-        start_key, end_key = append_between_bind_specs(bind_spec, filter)
+        start_key, end_key = append_between_bind_specs(bind_spec, filter, params_hash)
 
         start_param = Arel::Nodes::BindParam.new(start_key)
         end_param = Arel::Nodes::BindParam.new(end_key)
@@ -605,15 +605,48 @@ module CodeToQuery
     end
 
     def between_bind_keys(filter)
-      [filter['param_start'] || 'start', filter['param_end'] || 'end']
+      [
+        filter['param_start'] || default_between_bind_key(filter, 'start'),
+        filter['param_end'] || default_between_bind_key(filter, 'end')
+      ]
     end
 
-    def append_between_bind_specs(bind_spec, filter)
+    def append_between_bind_specs(bind_spec, filter, params_hash = nil)
       start_key, end_key = between_bind_keys(filter)
+      alias_legacy_between_params!(params_hash, filter, start_key, end_key) if params_hash
+
       append_bind_spec(bind_spec, key: start_key, column: filter['column'])
       append_bind_spec(bind_spec, key: end_key, column: filter['column'])
 
       [start_key, end_key]
+    end
+
+    def alias_legacy_between_params!(params_hash, filter, start_key, end_key)
+      return if filter['param_start'] || filter['param_end']
+
+      if !params_hash_has_key?(params_hash, start_key) && params_hash_has_key?(params_hash, 'start')
+        params_hash[start_key] = params_hash['start']
+      end
+
+      return if params_hash_has_key?(params_hash, end_key)
+      return unless params_hash_has_key?(params_hash, 'end')
+
+      params_hash[end_key] = params_hash['end']
+    end
+
+    def default_between_bind_key(filter, bound_side)
+      column = filter['column'].to_s.strip
+      return bound_side unless column != ''
+
+      "#{sanitize_bind_key(column)}_#{bound_side}"
+    end
+
+    def sanitize_bind_key(value)
+      value.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
+    end
+
+    def params_hash_has_key?(params_hash, key)
+      params_hash.key?(key.to_s) || params_hash.key?(key.to_sym)
     end
 
     def having_bind_key(having_filter)

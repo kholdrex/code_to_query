@@ -11,7 +11,7 @@ module CodeToQuery
 
     def initialize(sql:, params:, bind_spec:, intent:, allow_tables:, config:)
       @sql = sql
-      @params = params || {}
+      @params = normalize_params_with_between_defaults(params || {}, intent['filters'])
       @bind_spec = bind_spec || []
       @intent = intent || {}
       @allow_tables = allow_tables
@@ -163,6 +163,53 @@ module CodeToQuery
         policy_applied: policy_applied?,
         bind_count: Array(@bind_spec).length
       }
+    end
+
+    def normalize_params_with_between_defaults(params, filters)
+      normalized = params.dup
+      normalize_between_filter_params(Array(filters), normalized)
+      normalized
+    end
+
+    def normalize_between_filter_params(filters, normalized_params)
+      Array(filters).each do |filter|
+        if filter['op'].to_s == 'between'
+          hydrate_between_param_defaults(filter, normalized_params)
+        end
+
+        normalize_between_filter_params(Array(filter['related_filters']), normalized_params)
+      end
+    end
+
+    def hydrate_between_param_defaults(filter, normalized_params)
+      return if filter['param_start'] || filter['param_end']
+
+      start_key, end_key = between_filter_keys(filter)
+      return if between_param_key_present?(normalized_params, start_key) &&
+                between_param_key_present?(normalized_params, end_key)
+
+      legacy_start = normalized_params['start'] || normalized_params[:start]
+      legacy_end = normalized_params['end'] || normalized_params[:end]
+
+      normalized_params[start_key] = legacy_start if legacy_start && !between_param_key_present?(normalized_params, start_key)
+      normalized_params[end_key] = legacy_end if legacy_end && !between_param_key_present?(normalized_params, end_key)
+    end
+
+    def between_filter_keys(filter)
+      [
+        filter['param_start'] || default_between_filter_key(filter['column'], 'start'),
+        filter['param_end'] || default_between_filter_key(filter['column'], 'end')
+      ]
+    end
+
+    def default_between_filter_key(column_name, bound_side)
+      return bound_side if column_name.to_s.strip == ''
+
+      "#{column_name.to_s.strip.gsub(/[^a-zA-Z0-9_]/, '_')}_#{bound_side}"
+    end
+
+    def between_param_key_present?(params, key)
+      params.key?(key) || params.key?(key.to_sym) || params.key?(key.to_s)
     end
 
     def query_shape
@@ -332,11 +379,13 @@ module CodeToQuery
         value = @params[param_key.to_s] || @params[param_key.to_sym]
         scope.where("#{scope.connection.quote_column_name(column)} #{operator} ?", value)
       when 'between'
-        start_key = filter['param_start'] || 'start'
-        end_key = filter['param_end'] || 'end'
-        start_value = @params[start_key.to_s] || @params[start_key.to_sym]
-        end_value = @params[end_key.to_s] || @params[end_key.to_sym]
-        scope.where(column => start_value..end_value)
+        start_key, end_key = between_filter_keys(filter)
+        start_key, end_key = [start_key, end_key].map(&:to_s)
+        start_value = @params[start_key] || @params[start_key.to_sym]
+        end_value = @params[end_key] || @params[end_key.to_sym]
+        start_value ||= @params['start'] || @params[:start]
+        end_value ||= @params['end'] || @params[:end]
+        scope.where(column => (start_value..end_value))
       when 'in'
         param_key = filter['param'] || column
         values = @params[param_key.to_s] || @params[param_key.to_sym]
@@ -377,10 +426,12 @@ module CodeToQuery
                          subquery.where("#{related_table}.#{rcol} #{rop} ?", rval)
                        end
           when 'between'
-            start_key = rf['param_start'] || 'start'
-            end_key = rf['param_end'] || 'end'
-            start_val = @params[start_key.to_s] || @params[start_key.to_sym]
-            end_val = @params[end_key.to_s] || @params[end_key.to_sym]
+            start_key, end_key = between_filter_keys(rf)
+            start_key, end_key = [start_key, end_key].map(&:to_s)
+            start_val = @params[start_key] || @params[start_key.to_sym]
+            end_val = @params[end_key] || @params[end_key.to_sym]
+            start_val ||= @params['start'] || @params[:start]
+            end_val ||= @params['end'] || @params[:end]
             subquery = subquery.where("#{related_table}.#{rcol} BETWEEN ? AND ?", start_val, end_val)
           when 'in'
             vals = Array(rval)
