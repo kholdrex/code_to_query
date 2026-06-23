@@ -541,7 +541,7 @@ module CodeToQuery
       value.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
     end
 
-    def build_arel_condition(table, filter, bind_spec, params_hash)
+    def build_arel_condition(table, filter, bind_spec, params_hash = nil)
       column = table[filter['column']]
       operator = filter['op']
 
