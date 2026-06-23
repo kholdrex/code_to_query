@@ -29,6 +29,26 @@ RSpec.describe CodeToQuery::Query do
     it 'returns the parameters hash' do
       expect(query.params).to eq(params)
     end
+
+    it 'adds between defaults derived from column names for legacy start/end params' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "orders" WHERE "created_at" BETWEEN $1 AND $2',
+        params: { 'start' => '2023-01-01', 'end' => '2023-12-31' },
+        bind_spec: [{ key: 'created_at_start', column: 'created_at' }, { key: 'created_at_end', column: 'created_at' }],
+        intent: {
+          'table' => 'orders',
+          'type' => 'select',
+          'filters' => [
+            { 'column' => 'created_at', 'op' => 'between' }
+          ]
+        },
+        allow_tables: ['orders'],
+        config: config
+      )
+
+      expect(q.params['created_at_start']).to eq('2023-01-01')
+      expect(q.params['created_at_end']).to eq('2023-12-31')
+    end
   end
 
   describe '#safe?' do

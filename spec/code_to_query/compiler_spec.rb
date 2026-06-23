@@ -233,6 +233,70 @@ RSpec.describe CodeToQuery::Compiler do
       end
     end
 
+    context 'with BETWEEN filters lacking explicit param names' do
+      let(:intent) do
+        {
+          'type' => 'select',
+          'table' => 'orders',
+          'columns' => ['*'],
+          'filters' => [
+            {
+              'column' => 'created_at',
+              'op' => 'between'
+            }
+          ],
+          'limit' => 100,
+          'params' => {
+            'created_at_start' => '2023-01-01',
+            'created_at_end' => '2023-12-31'
+          }
+        }
+      end
+
+      it 'derives column-scoped default bind keys for SQL compilation' do
+        result = compiler.compile(intent)
+
+        expect(result[:params]['created_at_start']).to eq('2023-01-01')
+        expect(result[:params]['created_at_end']).to eq('2023-12-31')
+        expect(result[:bind_spec]).to include(
+          hash_including(key: 'created_at_start', column: 'created_at'),
+          hash_including(key: 'created_at_end', column: 'created_at')
+        )
+      end
+    end
+
+    context 'with legacy BETWEEN params and lacking explicit param names' do
+      let(:intent) do
+        {
+          'type' => 'select',
+          'table' => 'orders',
+          'columns' => ['*'],
+          'filters' => [
+            {
+              'column' => 'created_at',
+              'op' => 'between'
+            }
+          ],
+          'limit' => 100,
+          'params' => {
+            'start' => '2023-01-01',
+            'end' => '2023-12-31'
+          }
+        }
+      end
+
+      it 'aliases legacy start/end to derived bind keys for SQL compilation' do
+        result = compiler.compile(intent)
+
+        expect(result[:params]['created_at_start']).to eq('2023-01-01')
+        expect(result[:params]['created_at_end']).to eq('2023-12-31')
+        expect(result[:bind_spec]).to include(
+          hash_including(key: 'created_at_start', column: 'created_at'),
+          hash_including(key: 'created_at_end', column: 'created_at')
+        )
+      end
+    end
+
     context 'with ORDER BY clause' do
       let(:intent) do
         {
