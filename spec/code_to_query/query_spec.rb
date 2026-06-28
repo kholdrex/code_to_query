@@ -155,7 +155,7 @@ RSpec.describe CodeToQuery::Query do
         allow_tables: ['users'],
         config: config
       )
-      scope = instance_spy('scope')
+      scope = spy('scope')
 
       scoped_query.send(:apply_filter_to_scope, scope, { 'column' => 'archived', 'op' => '=' })
 
@@ -175,7 +175,7 @@ RSpec.describe CodeToQuery::Query do
         allow_tables: ['orders'],
         config: config
       )
-      scope = instance_spy('scope')
+      scope = spy('scope')
 
       scoped_query.send(:apply_filter_to_scope, scope, { 'column' => 'created_at', 'op' => 'between', 'param_start' => 'from_date' })
 
