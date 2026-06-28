@@ -172,6 +172,50 @@ RSpec.describe CodeToQuery::Compiler do
       end
     end
 
+    context 'with related subquery BETWEEN filter' do
+      let(:intent) do
+        {
+          'type' => 'select',
+          'table' => 'questions',
+          'columns' => ['*'],
+          'filters' => [
+            { 'column' => 'archived', 'op' => '=', 'param' => 'archived' },
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => [
+                { 'column' => 'created_at', 'op' => 'between' }
+              ]
+            }
+          ],
+          'limit' => 100,
+          'params' => {
+            'archived' => false,
+            'created_at_start' => '2023-01-01',
+            'created_at_end' => '2023-12-31'
+          }
+        }
+      end
+
+      it 'preserves subquery BETWEEN placeholders and bind order' do
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq(
+          'SELECT * FROM "questions" WHERE "archived" = $1 AND ' \
+          'EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id" ' \
+          'AND "answers"."created_at" BETWEEN $2 AND $3) LIMIT 100'
+        )
+        expect(result[:bind_spec]).to eq([
+                                           { key: 'archived', column: 'archived', cast: nil },
+                                           { key: 'created_at_start', column: 'created_at', cast: nil },
+                                           { key: 'created_at_end', column: 'created_at', cast: nil }
+                                         ])
+      end
+    end
+
     context 'with WHERE filters' do
       let(:intent) do
         {
@@ -294,6 +338,74 @@ RSpec.describe CodeToQuery::Compiler do
           hash_including(key: 'created_at_start', column: 'created_at'),
           hash_including(key: 'created_at_end', column: 'created_at')
         )
+      end
+
+      it 'aliases legacy symbol keys to derived bind keys for SQL compilation' do
+        intent['params'] = { start: '2023-01-01', end: '2023-12-31' }
+
+        result = compiler.compile(intent)
+
+        expect(result[:params]['created_at_start']).to eq('2023-01-01')
+        expect(result[:params]['created_at_end']).to eq('2023-12-31')
+      end
+
+      it 'preserves falsey legacy symbol values when aliasing derived bind keys' do
+        intent['params'] = { start: false, end: true }
+
+        result = compiler.compile(intent)
+
+        expect(result[:params]['created_at_start']).to be(false)
+        expect(result[:params]['created_at_end']).to be(true)
+      end
+    end
+
+    context 'with Arel BETWEEN filters lacking explicit param names' do
+      let(:arel_table) { Arel::Table.new(:orders) }
+      let(:filter) do
+        {
+          'column' => 'created_at',
+          'op' => 'between'
+        }
+      end
+
+      it 'reuses derived bind keys and aliases legacy params for Arel compilation' do
+        bind_spec = []
+        params_hash = { 'start' => '2023-01-01', 'end' => '2023-12-31' }
+
+        condition = compiler.__send__(:build_arel_condition, arel_table, filter, bind_spec, params_hash)
+
+        expect(condition).to be_a(Arel::Nodes::Between)
+        expect(params_hash['created_at_start']).to eq('2023-01-01')
+        expect(params_hash['created_at_end']).to eq('2023-12-31')
+        expect(bind_spec).to eq([
+                                  { key: 'created_at_start', column: 'created_at', cast: nil },
+                                  { key: 'created_at_end', column: 'created_at', cast: nil }
+                                ])
+      end
+
+      it 'aliases legacy symbol keys for Arel compilation' do
+        bind_spec = []
+        params_hash = { start: '2023-01-01', end: '2023-12-31' }
+
+        compiler.__send__(:build_arel_condition, arel_table, filter, bind_spec, params_hash)
+
+        expect(params_hash['created_at_start']).to eq('2023-01-01')
+        expect(params_hash['created_at_end']).to eq('2023-12-31')
+      end
+
+      it 'aliases only the implicit side when one bound keeps an explicit param name' do
+        bind_spec = []
+        params_hash = { 'end' => '2023-12-31' }
+        mixed_filter = filter.merge('param_start' => 'from_date')
+
+        compiler.__send__(:build_arel_condition, arel_table, mixed_filter, bind_spec, params_hash)
+
+        expect(params_hash).not_to have_key('created_at_start')
+        expect(params_hash['created_at_end']).to eq('2023-12-31')
+        expect(bind_spec).to eq([
+                                  { key: 'from_date', column: 'created_at', cast: nil },
+                                  { key: 'created_at_end', column: 'created_at', cast: nil }
+                                ])
       end
     end
 

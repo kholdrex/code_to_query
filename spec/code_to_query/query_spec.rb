@@ -49,6 +49,152 @@ RSpec.describe CodeToQuery::Query do
       expect(q.params['created_at_start']).to eq('2023-01-01')
       expect(q.params['created_at_end']).to eq('2023-12-31')
     end
+
+    it 'adds between defaults derived from column names for legacy symbol-key params' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "orders" WHERE "created_at" BETWEEN $1 AND $2',
+        params: { start: '2023-01-01', end: '2023-12-31' },
+        bind_spec: [{ key: 'created_at_start', column: 'created_at' }, { key: 'created_at_end', column: 'created_at' }],
+        intent: {
+          'table' => 'orders',
+          'type' => 'select',
+          'filters' => [
+            { 'column' => 'created_at', 'op' => 'between' }
+          ]
+        },
+        allow_tables: ['orders'],
+        config: config
+      )
+
+      expect(q.params['created_at_start']).to eq('2023-01-01')
+      expect(q.params['created_at_end']).to eq('2023-12-31')
+    end
+
+    it 'preserves false-valued legacy between params when deriving column-based keys' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "orders" WHERE "created_at" BETWEEN $1 AND $2',
+        params: { 'start' => false, 'end' => true },
+        bind_spec: [{ key: 'created_at_start', column: 'created_at' }, { key: 'created_at_end', column: 'created_at' }],
+        intent: {
+          'table' => 'orders',
+          'type' => 'select',
+          'filters' => [
+            { 'column' => 'created_at', 'op' => 'between' }
+          ]
+        },
+        allow_tables: ['orders'],
+        config: config
+      )
+
+      expect(q.params['created_at_start']).to be(false)
+      expect(q.params['created_at_end']).to be(true)
+    end
+
+    it 'hydrates only the implicit side when one bound keeps an explicit param name' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "orders" WHERE "created_at" BETWEEN $1 AND $2',
+        params: { 'end' => '2023-12-31' },
+        bind_spec: [{ key: 'from_date', column: 'created_at' }, { key: 'created_at_end', column: 'created_at' }],
+        intent: {
+          'table' => 'orders',
+          'type' => 'select',
+          'filters' => [
+            { 'column' => 'created_at', 'op' => 'between', 'param_start' => 'from_date' }
+          ]
+        },
+        allow_tables: ['orders'],
+        config: config
+      )
+
+      expect(q.params['created_at_end']).to eq('2023-12-31')
+      expect(q.params).not_to have_key('created_at_start')
+    end
+  end
+
+  describe '#binds' do
+    it 'preserves false values stored under string keys' do
+      mock_connection = double('Connection')
+      ar_base = Class.new do
+        def self.connection = @mock_connection
+
+        class << self
+          attr_writer :mock_connection
+        end
+      end
+      ar_base.mock_connection = mock_connection
+      stub_const('ActiveRecord::Base', ar_base)
+      stub_const('ActiveRecord::Relation::QueryAttribute', Struct.new(:name, :value, :type))
+
+      q = described_class.new(
+        sql: 'SELECT * FROM "users" WHERE "archived" = $1',
+        params: { 'archived' => false },
+        bind_spec: [{ key: 'archived', column: 'archived', cast: nil }],
+        intent: { 'table' => 'users', 'type' => 'select' },
+        allow_tables: ['users'],
+        config: config
+      )
+      allow(q).to receive(:infer_column_type).and_return(:boolean)
+
+      binds = q.binds
+
+      expect(binds.first.value).to be(false)
+    end
+  end
+
+  describe 'false-valued param lookups' do
+    it 'preserves false values when applying equality filters to a scope' do
+      scoped_query = described_class.new(
+        sql: 'SELECT * FROM "users" WHERE "archived" = $1',
+        params: { 'archived' => false },
+        bind_spec: [],
+        intent: {
+          'table' => 'users',
+          'type' => 'select',
+          'filters' => [{ 'column' => 'archived', 'op' => '=' }]
+        },
+        allow_tables: ['users'],
+        config: config
+      )
+      scope = double('scope')
+
+      expect(scope).to receive(:where).with('archived' => false)
+      scoped_query.send(:apply_filter_to_scope, scope, { 'column' => 'archived', 'op' => '=' })
+    end
+
+    it 'does not fall back to legacy start when between start uses an explicit param name' do
+      scoped_query = described_class.new(
+        sql: 'SELECT * FROM "orders" WHERE "created_at" BETWEEN $1 AND $2',
+        params: { 'start' => false, 'created_at_end' => '2023-12-31' },
+        bind_spec: [],
+        intent: {
+          'table' => 'orders',
+          'type' => 'select',
+          'filters' => [{ 'column' => 'created_at', 'op' => 'between', 'param_start' => 'from_date' }]
+        },
+        allow_tables: ['orders'],
+        config: config
+      )
+      scope = double('scope')
+
+      expect(scope).to receive(:where).with('created_at' => (nil..'2023-12-31'))
+      scoped_query.send(:apply_filter_to_scope, scope, { 'column' => 'created_at', 'op' => 'between', 'param_start' => 'from_date' })
+    end
+
+    it 'infers boolean type from false values stored under custom bind keys' do
+      typed_query = described_class.new(
+        sql: 'SELECT * FROM "users" WHERE "archived" = $1',
+        params: { 'is_archived' => false },
+        bind_spec: [],
+        intent: { 'table' => 'users', 'type' => 'select' },
+        allow_tables: ['users'],
+        config: config
+      )
+
+      hide_const('ActiveRecord::Base')
+
+      inferred_type = typed_query.send(:infer_column_type, nil, 'archived', nil, 'is_archived')
+      expect(inferred_type).to be_a(ActiveRecord::Type::Boolean)
+    end
   end
 
   describe '#safe?' do

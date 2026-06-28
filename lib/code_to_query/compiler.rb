@@ -419,12 +419,17 @@ module CodeToQuery
     end
 
     def build_string_between_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
-      append_between_bind_specs(bind_spec, filter, params_hash)
+      between_clause = build_between_bind_clause(
+        filter,
+        bind_spec,
+        params_hash,
+        placeholder_index: placeholder_index
+      )
 
-      placeholder1 = placeholder_for_adapter(placeholder_index)
-      placeholder2 = placeholder_for_adapter(placeholder_index + 1)
-
-      ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index + 2]
+      [
+        "#{quoted_column} BETWEEN #{between_clause[:start_placeholder]} AND #{between_clause[:end_placeholder]}",
+        between_clause[:next_placeholder_index]
+      ]
     end
 
     def build_string_in_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
@@ -555,10 +560,10 @@ module CodeToQuery
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'not_exists Arel compilation is not implemented; falling back to string builder'
       when 'between'
-        start_key, end_key = append_between_bind_specs(bind_spec, filter, params_hash)
+        between_clause = build_between_bind_clause(filter, bind_spec, params_hash)
 
-        start_param = Arel::Nodes::BindParam.new(start_key)
-        end_param = Arel::Nodes::BindParam.new(end_key)
+        start_param = Arel::Nodes::BindParam.new(between_clause[:start_key])
+        end_param = Arel::Nodes::BindParam.new(between_clause[:end_key])
         column.between(start_param..end_param)
       when 'in'
         key = filter_bind_key(filter)
@@ -621,22 +626,32 @@ module CodeToQuery
       [start_key, end_key]
     end
 
-    def alias_legacy_between_params!(params_hash, filter, start_key, end_key)
-      return if filter['param_start'] || filter['param_end']
+    def build_between_bind_clause(filter, bind_spec, params_hash = nil, placeholder_index: nil)
+      start_key, end_key = append_between_bind_specs(bind_spec, filter, params_hash)
 
-      if !params_hash_has_key?(params_hash, start_key) && params_hash_has_key?(params_hash, 'start')
-        params_hash[start_key] = params_hash['start']
+      {
+        start_key: start_key,
+        end_key: end_key,
+        start_placeholder: placeholder_index && placeholder_for_adapter(placeholder_index),
+        end_placeholder: placeholder_index && placeholder_for_adapter(placeholder_index + 1),
+        next_placeholder_index: placeholder_index && placeholder_index + 2
+      }
+    end
+
+    def alias_legacy_between_params!(params_hash, filter, start_key, end_key)
+      if !filter['param_start'] && !params_hash_has_key?(params_hash, start_key) && params_hash_has_key?(params_hash, 'start')
+        params_hash[start_key] = params_hash_value(params_hash, 'start')
       end
 
-      return if params_hash_has_key?(params_hash, end_key)
+      return if filter['param_end'] || params_hash_has_key?(params_hash, end_key)
       return unless params_hash_has_key?(params_hash, 'end')
 
-      params_hash[end_key] = params_hash['end']
+      params_hash[end_key] = params_hash_value(params_hash, 'end')
     end
 
     def default_between_bind_key(filter, bound_side)
       column = filter['column'].to_s.strip
-      return bound_side unless column != ''
+      return bound_side if column.empty?
 
       "#{sanitize_bind_key(column)}_#{bound_side}"
     end
@@ -647,6 +662,20 @@ module CodeToQuery
 
     def params_hash_has_key?(params_hash, key)
       params_hash.key?(key.to_s) || params_hash.key?(key.to_sym)
+    end
+
+    def params_hash_value(params_hash, key)
+      return params_hash[key.to_s] if params_hash.key?(key.to_s)
+
+      params_hash[key.to_sym]
+    end
+
+    def params_hash_lookup(params_hash, key)
+      return [false, nil] unless params_hash.respond_to?(:key?)
+      return [true, params_hash[key.to_s]] if params_hash.key?(key.to_s)
+      return [true, params_hash[key.to_sym]] if params_hash.key?(key.to_sym)
+
+      [false, nil]
     end
 
     def having_bind_key(having_filter)
@@ -846,7 +875,8 @@ module CodeToQuery
         key = f['param'] || col
         next unless key
 
-        raw = params[key.to_s] || params[key.to_sym]
+        present, raw = params_hash_lookup(params, key)
+        next unless present
         next if raw.nil?
 
         # Map Rails enum string to integer

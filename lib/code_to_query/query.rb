@@ -37,10 +37,10 @@ module CodeToQuery
         column_name = bind_info[:column]
 
         # Get parameter value (check both string and symbol keys)
-        value = @params[key.to_s] || @params[key.to_sym]
+        value = param_value_for_key(@params, key)
 
         # Determine the correct ActiveRecord type
-        type = infer_column_type(connection, @intent['table'], column_name, bind_info[:cast])
+        type = infer_column_type(connection, @intent['table'], column_name, bind_info[:cast], key)
 
         ActiveRecord::Relation::QueryAttribute.new(column_name.to_s, value, type)
       end
@@ -182,17 +182,20 @@ module CodeToQuery
     end
 
     def hydrate_between_param_defaults(filter, normalized_params)
-      return if filter['param_start'] || filter['param_end']
-
       start_key, end_key = between_filter_keys(filter)
       return if between_param_key_present?(normalized_params, start_key) &&
                 between_param_key_present?(normalized_params, end_key)
 
-      legacy_start = normalized_params['start'] || normalized_params[:start]
-      legacy_end = normalized_params['end'] || normalized_params[:end]
+      legacy_start = param_value_for_key(normalized_params, 'start')
+      legacy_end = param_value_for_key(normalized_params, 'end')
 
-      normalized_params[start_key] = legacy_start if legacy_start && !between_param_key_present?(normalized_params, start_key)
-      normalized_params[end_key] = legacy_end if legacy_end && !between_param_key_present?(normalized_params, end_key)
+      if !filter['param_start'] && between_param_key_present?(normalized_params, 'start') && !between_param_key_present?(normalized_params, start_key)
+        normalized_params[start_key] = legacy_start
+      end
+
+      if !filter['param_end'] && between_param_key_present?(normalized_params, 'end') && !between_param_key_present?(normalized_params, end_key)
+        normalized_params[end_key] = legacy_end
+      end
     end
 
     def between_filter_keys(filter)
@@ -210,6 +213,13 @@ module CodeToQuery
 
     def between_param_key_present?(params, key)
       params.key?(key) || params.key?(key.to_sym) || params.key?(key.to_s)
+    end
+
+    def param_value_for_key(params, key)
+      return params[key] if params.key?(key)
+      return params[key.to_s] if params.key?(key.to_s)
+
+      params[key.to_sym]
     end
 
     def query_shape
@@ -297,7 +307,7 @@ module CodeToQuery
       policy_in_binds || policy_in_params
     end
 
-    def infer_column_type(connection, table_name, column_name, explicit_cast)
+    def infer_column_type(connection, table_name, column_name, explicit_cast, param_key = column_name)
       return explicit_cast if explicit_cast
 
       # Try to get column info from ActiveRecord
@@ -320,7 +330,7 @@ module CodeToQuery
       end
 
       # Ultimate fallback: infer from parameter value
-      infer_type_from_value(@params[column_name] || @params[column_name.to_sym])
+      infer_type_from_value(param_value_for_key(@params, param_key))
     end
 
     def infer_type_from_value(value)
@@ -368,31 +378,31 @@ module CodeToQuery
       case operator
       when '='
         param_key = filter['param'] || column
-        value = @params[param_key.to_s] || @params[param_key.to_sym]
+        value = param_value_for_key(@params, param_key)
         scope.where(column => value)
       when '!=', '<>'
         param_key = filter['param'] || column
-        value = @params[param_key.to_s] || @params[param_key.to_sym]
+        value = param_value_for_key(@params, param_key)
         scope.where.not(column => value)
       when '>', '>=', '<', '<='
         param_key = filter['param'] || column
-        value = @params[param_key.to_s] || @params[param_key.to_sym]
+        value = param_value_for_key(@params, param_key)
         scope.where("#{scope.connection.quote_column_name(column)} #{operator} ?", value)
       when 'between'
         start_key, end_key = between_filter_keys(filter)
         start_key, end_key = [start_key, end_key].map(&:to_s)
-        start_value = @params[start_key] || @params[start_key.to_sym]
-        end_value = @params[end_key] || @params[end_key.to_sym]
-        start_value ||= @params['start'] || @params[:start]
-        end_value ||= @params['end'] || @params[:end]
+        start_value = param_value_for_key(@params, start_key)
+        end_value = param_value_for_key(@params, end_key)
+        start_value = param_value_for_key(@params, 'start') if !filter['param_start'] && !between_param_key_present?(@params, start_key)
+        end_value = param_value_for_key(@params, 'end') if !filter['param_end'] && !between_param_key_present?(@params, end_key)
         scope.where(column => (start_value..end_value))
       when 'in'
         param_key = filter['param'] || column
-        values = @params[param_key.to_s] || @params[param_key.to_sym]
+        values = param_value_for_key(@params, param_key)
         scope.where(column => Array(values))
       when 'like', 'ilike'
         param_key = filter['param'] || column
-        value = @params[param_key.to_s] || @params[param_key.to_sym]
+        value = param_value_for_key(@params, param_key)
         scope.where("#{scope.connection.quote_column_name(column)} #{operator.upcase} ?", value)
       when 'exists', 'not_exists'
         related_table = filter['related_table']
@@ -415,7 +425,7 @@ module CodeToQuery
           rcol = rf['column']
           rop = rf['op']
           rkey = rf['param'] || rcol
-          rval = @params[rkey.to_s] || @params[rkey.to_sym]
+          rval = param_value_for_key(@params, rkey)
           next if rcol.nil? || rop.nil?
 
           case rop
@@ -428,10 +438,10 @@ module CodeToQuery
           when 'between'
             start_key, end_key = between_filter_keys(rf)
             start_key, end_key = [start_key, end_key].map(&:to_s)
-            start_val = @params[start_key] || @params[start_key.to_sym]
-            end_val = @params[end_key] || @params[end_key.to_sym]
-            start_val ||= @params['start'] || @params[:start]
-            end_val ||= @params['end'] || @params[:end]
+            start_val = param_value_for_key(@params, start_key)
+            end_val = param_value_for_key(@params, end_key)
+            start_val = param_value_for_key(@params, 'start') if !rf['param_start'] && !between_param_key_present?(@params, start_key)
+            end_val = param_value_for_key(@params, 'end') if !rf['param_end'] && !between_param_key_present?(@params, end_key)
             subquery = subquery.where("#{related_table}.#{rcol} BETWEEN ? AND ?", start_val, end_val)
           when 'in'
             vals = Array(rval)
