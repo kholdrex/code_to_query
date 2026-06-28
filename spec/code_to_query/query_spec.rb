@@ -192,7 +192,7 @@ RSpec.describe CodeToQuery::Query do
 
       hide_const('ActiveRecord::Base')
 
-      inferred_type = typed_query.send(:infer_column_type, nil, 'archived', nil, 'is_archived')
+      inferred_type = typed_query.send(:infer_column_type, nil, nil, 'archived', nil, 'is_archived')
       expect(inferred_type).to be_a(ActiveRecord::Type::Boolean)
     end
   end

@@ -564,7 +564,7 @@ module CodeToQuery
 
         start_param = Arel::Nodes::BindParam.new(between_clause[:start_key])
         end_param = Arel::Nodes::BindParam.new(between_clause[:end_key])
-        column.between(start_param..end_param)
+        Arel::Nodes::Between.new(column, Arel::Nodes::And.new([start_param, end_param]))
       when 'in'
         key = filter_bind_key(filter)
         append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
