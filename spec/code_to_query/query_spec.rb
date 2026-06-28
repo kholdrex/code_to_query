@@ -155,10 +155,11 @@ RSpec.describe CodeToQuery::Query do
         allow_tables: ['users'],
         config: config
       )
-      scope = double('scope')
+      scope = instance_spy('scope')
 
-      expect(scope).to receive(:where).with('archived' => false)
       scoped_query.send(:apply_filter_to_scope, scope, { 'column' => 'archived', 'op' => '=' })
+
+      expect(scope).to have_received(:where).with('archived' => false)
     end
 
     it 'does not fall back to legacy start when between start uses an explicit param name' do
@@ -174,10 +175,11 @@ RSpec.describe CodeToQuery::Query do
         allow_tables: ['orders'],
         config: config
       )
-      scope = double('scope')
+      scope = instance_spy('scope')
 
-      expect(scope).to receive(:where).with('created_at' => (nil..'2023-12-31'))
       scoped_query.send(:apply_filter_to_scope, scope, { 'column' => 'created_at', 'op' => 'between', 'param_start' => 'from_date' })
+
+      expect(scope).to have_received(:where).with('created_at' => (nil..'2023-12-31'))
     end
 
     it 'infers boolean type from false values stored under custom bind keys' do
@@ -396,7 +398,7 @@ RSpec.describe CodeToQuery::Query do
     end
   end
 
-  describe '#binds' do
+  describe '#binds fallback behavior' do
     context 'without ActiveRecord' do
       it 'returns empty array' do
         hide_const('ActiveRecord')

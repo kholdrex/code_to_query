@@ -634,7 +634,7 @@ module CodeToQuery
         end_key: end_key,
         start_placeholder: placeholder_index && placeholder_for_adapter(placeholder_index),
         end_placeholder: placeholder_index && placeholder_for_adapter(placeholder_index + 1),
-        next_placeholder_index: placeholder_index && placeholder_index + 2
+        next_placeholder_index: placeholder_index && (placeholder_index + 2)
       }
     end
 

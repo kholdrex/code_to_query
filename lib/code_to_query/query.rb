@@ -193,9 +193,9 @@ module CodeToQuery
         normalized_params[start_key] = legacy_start
       end
 
-      if !filter['param_end'] && between_param_key_present?(normalized_params, 'end') && !between_param_key_present?(normalized_params, end_key)
-        normalized_params[end_key] = legacy_end
-      end
+      return unless !filter['param_end'] && between_param_key_present?(normalized_params, 'end') && !between_param_key_present?(normalized_params, end_key)
+
+      normalized_params[end_key] = legacy_end
     end
 
     def between_filter_keys(filter)
