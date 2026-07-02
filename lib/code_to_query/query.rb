@@ -297,24 +297,26 @@ module CodeToQuery
       # Verify via bind_spec or params keys rather than scanning SQL text.
       return true unless @config.policy_adapter
 
-      return true unless policy_predicates_expected?
+      expected_keys = expected_policy_keys
+      return true if expected_keys.empty?
 
-      policy_in_binds = Array(@bind_spec).any? do |bind|
-        key = bind[:key]
-        key.to_s.start_with?('policy_')
-      end
+      present_keys = Array(@bind_spec).filter_map { |bind| bind[:key]&.to_s }
+      present_keys.concat(@params.keys.map(&:to_s))
 
-      policy_in_params = @params.keys.any? { |k| k.to_s.start_with?('policy_') }
-
-      policy_in_binds || policy_in_params
+      expected_keys.all? { |key| present_keys.include?(key) }
     end
 
     def policy_predicates_expected?
-      Array(@intent['filters']).any? do |filter|
-        filter['param'].to_s.start_with?('policy_') ||
-          filter['param_start'].to_s.start_with?('policy_') ||
-          filter['param_end'].to_s.start_with?('policy_')
-      end
+      expected_policy_keys.any?
+    end
+
+    def expected_policy_keys
+      explicit_keys = Array(@intent['__policy_expected_keys']).map(&:to_s)
+      filter_keys = Array(@intent['filters']).flat_map do |filter|
+        [filter['param'], filter['param_start'], filter['param_end']]
+      end.compact.map(&:to_s).select { |key| key.start_with?('policy_') }
+
+      (explicit_keys + filter_keys).uniq
     end
 
     def infer_column_type(connection, table_name, column_name, explicit_cast, param_key = column_name)

@@ -944,6 +944,26 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:params]['policy_tenant_id']).to eq(666)
         expect(result[:params][subquery_key]).to eq(42)
         expect(result[:bind_spec]).to include(hash_including(key: subquery_key, column: :tenant_id))
+        expect(result[:intent]['__policy_expected_keys']).to include(subquery_key)
+      end
+
+      it 'does not mutate the caller intent while recording subquery policy expectations' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          kwargs[:table] == 'answers' ? { enforced_predicates: { tenant_id: 42 } } : {}
+        end
+
+        original_intent = {
+          'table' => 'questions',
+          'columns' => ['*'],
+          'filters' => [related_filter('answers')],
+          'limit' => 100,
+          'params' => {}
+        }
+
+        compiler.compile(original_intent)
+
+        expect(original_intent).not_to have_key('__policy_expected_keys')
+        expect(original_intent['filters'].first).not_to have_key('__policy_expected_keys')
       end
 
       it 'keeps main-table and related-table policy binds distinct for the same column name' do

@@ -16,7 +16,8 @@ module CodeToQuery
     end
 
     def compile(intent, current_user: nil)
-      intent_with_policy = apply_policy_predicates(intent, current_user)
+      working_intent = deep_dup_value(intent)
+      intent_with_policy = apply_policy_predicates(working_intent, current_user)
       if use_arel?
         compile_with_arel(intent_with_policy, current_user)
       else
@@ -34,8 +35,11 @@ module CodeToQuery
       policy_hash = extract_enforced_predicates(policy_info)
       return intent if policy_hash.empty?
 
+      policy_keys = []
       filters = Array(intent['filters']) + policy_hash.map do |column, value|
         if value.is_a?(Range) && value.begin && value.end
+          policy_keys << "policy_#{column}_start"
+          policy_keys << "policy_#{column}_end"
           {
             'column' => column.to_s,
             'op' => 'between',
@@ -43,6 +47,7 @@ module CodeToQuery
             'param_end' => "policy_#{column}_end"
           }
         else
+          policy_keys << "policy_#{column}"
           {
             'column' => column.to_s,
             'op' => '=',
@@ -63,7 +68,8 @@ module CodeToQuery
 
       intent.merge(
         'filters' => filters,
-        'params' => params
+        'params' => params,
+        '__policy_expected_keys' => merge_policy_expected_keys(intent, policy_keys)
       )
     rescue PolicyAdapterError
       raise
@@ -217,7 +223,7 @@ module CodeToQuery
       if (filters = intent['filters']).present?
         where_fragments = filters.map do |filter|
           fragment, placeholder_index = build_string_filter_fragment(
-            filter, table, bind_spec, params_hash, placeholder_index, current_user
+            filter, table, bind_spec, params_hash, placeholder_index, current_user, intent
           )
           fragment
         end
@@ -393,13 +399,13 @@ module CodeToQuery
       "LIMIT #{Integer(limit)}"
     end
 
-    def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+    def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       col = quote_ident(filter['column'])
       case filter['op']
       when '=', '>', '<', '>=', '<=', '!=', '<>'
         build_string_comparison_fragment(col, filter, bind_spec, placeholder_index)
       when 'exists', 'not_exists'
-        build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+        build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       when 'between'
         build_string_between_fragment(col, filter, bind_spec, params_hash, placeholder_index)
       when 'in'
@@ -449,7 +455,7 @@ module CodeToQuery
       ["#{quoted_column} #{filter['op'].upcase} #{placeholder}", placeholder_index + 1]
     end
 
-    def build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+    def build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       related_table = filter['related_table']
       fk_column = filter['fk_column']
       base_column = filter['base_column'] || 'id'
@@ -464,7 +470,7 @@ module CodeToQuery
 
       sub_where = ["#{rt}.#{fk_col} = #{quote_ident(table)}.#{base_col}"]
       sub_where, placeholder_index = apply_policy_in_subquery(
-        sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
+        sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user, intent
       )
 
       related_filters.each do |related_filter|
@@ -494,7 +500,7 @@ module CodeToQuery
       end
     end
 
-    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user)
+    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user, intent)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
       info = safely_fetch_policy(table: related_table, current_user: current_user)
@@ -507,6 +513,7 @@ module CodeToQuery
         if value.is_a?(Range) && value.begin && value.end
           start_key = "#{policy_key_prefix}_start"
           end_key = "#{policy_key_prefix}_end"
+          merge_policy_expected_keys!(intent, start_key, end_key)
           params_hash[start_key] = value.begin
           params_hash[end_key] = value.end
           p1 = placeholder_for_adapter(placeholder_index)
@@ -518,6 +525,7 @@ module CodeToQuery
           sub_where << "#{rcol} BETWEEN #{p1} AND #{p2}"
         else
           key = policy_key_prefix
+          merge_policy_expected_keys!(intent, key)
           params_hash[key] = value
           p = placeholder_for_adapter(placeholder_index)
           append_bind_spec(bind_spec, key: key, column: column)
@@ -544,6 +552,29 @@ module CodeToQuery
 
     def policy_key_fragment(value)
       value.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
+    end
+
+    def merge_policy_expected_keys(intent, keys)
+      (Array(intent['__policy_expected_keys']) + Array(keys)).map(&:to_s).uniq
+    end
+
+    def merge_policy_expected_keys!(intent, *keys)
+      intent['__policy_expected_keys'] = merge_policy_expected_keys(intent, keys.flatten)
+    end
+
+    def deep_dup_value(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, nested_value), copy|
+          copy[key] = deep_dup_value(nested_value)
+        end
+      when Array
+        value.map { |nested_value| deep_dup_value(nested_value) }
+      else
+        value.dup
+      end
+    rescue TypeError
+      value
     end
 
     def build_arel_condition(table, filter, bind_spec, params_hash = nil)
