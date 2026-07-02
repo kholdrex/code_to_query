@@ -200,7 +200,7 @@ module CodeToQuery
 
       sql = visitor.accept(query.ast, Arel::Collectors::SQLString.new).value
 
-      { sql: sql, params: params_hash, bind_spec: bind_spec }
+      { sql: sql, params: params_hash, bind_spec: bind_spec, intent: intent }
     rescue StandardError => e
       @config.logger.warn("[code_to_query] Arel compilation failed: #{e.message}")
       compile_with_string_building(intent, current_user)
@@ -238,7 +238,7 @@ module CodeToQuery
         sql_parts << build_string_limit_clause(limit)
       end
 
-      { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec }
+      { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec, intent: intent }
     end
 
     def build_arel_select_query(intent, table)

@@ -69,6 +69,39 @@ RSpec.describe CodeToQuery do
       expect(query).to be_a(CodeToQuery::Query)
     end
 
+    it 'preserves compiler-augmented intent on the returned query' do
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+      linter = instance_double(CodeToQuery::Guardrails::SqlLinter)
+
+      compiled_intent = sample_intent.merge(
+        'filters' => [
+          { 'column' => 'tenant_id', 'op' => '=', 'param' => 'policy_tenant_id' }
+        ],
+        'params' => { 'policy_tenant_id' => 42 }
+      )
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(CodeToQuery::Guardrails::SqlLinter).to receive(:new).and_return(linter)
+
+      allow(planner).to receive(:plan).and_return(sample_intent)
+      allow(validator).to receive(:validate).and_return(sample_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT users.* FROM users WHERE users.tenant_id = $1',
+        params: { 'policy_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: compiled_intent
+      )
+      allow(linter).to receive(:check!)
+
+      query = described_class.ask(prompt: 'Get users', allow_tables: ['users'])
+
+      expect(query.intent).to eq(compiled_intent)
+    end
+
     # rubocop:disable RSpec/ExampleLength
     it 'marks compile/lint telemetry as policy-applied when policy binds are present' do
       events = []

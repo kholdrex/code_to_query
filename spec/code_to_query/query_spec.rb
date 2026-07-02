@@ -19,6 +19,45 @@ RSpec.describe CodeToQuery::Query do
     )
   end
 
+  def build_scope_backed_user_model(scope)
+    stub_const('ActiveRecord', Module.new) unless defined?(ActiveRecord)
+    stub_const('ActiveRecord::Base', Class.new)
+
+    user_model = Class.new(ActiveRecord::Base) do
+      def self.table_name = 'users'
+      def self.all = @scope
+
+      class << self
+        attr_writer :scope
+      end
+    end
+
+    user_model.scope = scope
+    stub_const('User', user_model)
+  end
+
+  def build_policy_query(config)
+    described_class.new(
+      sql: 'SELECT * FROM "users" WHERE "active" = $1 AND "tenant_id" = $2 LIMIT 100',
+      params: { 'active' => true, 'policy_tenant_id' => 42 },
+      bind_spec: [
+        { key: 'active', column: 'active', cast: nil },
+        { key: 'policy_tenant_id', column: 'tenant_id', cast: nil }
+      ],
+      intent: {
+        'table' => 'users',
+        'type' => 'select',
+        'filters' => [
+          { 'column' => 'active', 'op' => '=', 'param' => 'active' },
+          { 'column' => 'tenant_id', 'op' => '=', 'param' => 'policy_tenant_id' }
+        ],
+        'limit' => 100
+      },
+      allow_tables: ['users'],
+      config: config
+    )
+  end
+
   describe '#sql' do
     it 'returns the SQL string' do
       expect(query.sql).to eq(sql)
@@ -240,6 +279,14 @@ RSpec.describe CodeToQuery::Query do
 
       expect(q).to have_received(:perform_safety_checks).once
     end
+
+    it 'returns true for allowlist-only policy adapters with no injected predicates' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+
+      expect(query.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
   end
 
   describe '#explain' do
@@ -309,6 +356,18 @@ RSpec.describe CodeToQuery::Query do
       it 'returns nil for non-SELECT queries' do
         expect(query.to_relation).to be_nil
       end
+    end
+
+    it 'applies compiler-injected policy filters from the query intent' do
+      scope = double('scope')
+      allow(scope).to receive_messages(where: scope, order: scope, limit: scope)
+      build_scope_backed_user_model(scope)
+
+      build_policy_query(config).to_relation
+
+      expect(scope).to have_received(:where).with('active' => true).ordered
+      expect(scope).to have_received(:where).with('tenant_id' => 42).ordered
+      expect(scope).to have_received(:limit).with(100)
     end
   end
 

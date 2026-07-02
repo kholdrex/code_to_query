@@ -297,6 +297,8 @@ module CodeToQuery
       # Verify via bind_spec or params keys rather than scanning SQL text.
       return true unless @config.policy_adapter
 
+      return true unless policy_predicates_expected?
+
       policy_in_binds = Array(@bind_spec).any? do |bind|
         key = bind[:key]
         key.to_s.start_with?('policy_')
@@ -305,6 +307,14 @@ module CodeToQuery
       policy_in_params = @params.keys.any? { |k| k.to_s.start_with?('policy_') }
 
       policy_in_binds || policy_in_params
+    end
+
+    def policy_predicates_expected?
+      Array(@intent['filters']).any? do |filter|
+        filter['param'].to_s.start_with?('policy_') ||
+          filter['param_start'].to_s.start_with?('policy_') ||
+          filter['param_end'].to_s.start_with?('policy_')
+      end
     end
 
     def infer_column_type(connection, table_name, column_name, explicit_cast, param_key = column_name)
