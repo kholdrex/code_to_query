@@ -663,6 +663,7 @@ RSpec.describe CodeToQuery::Query do
       expect(scope).to have_received(:where).with('tenant_id' => 42).ordered
       expect(scope).to have_received(:limit).with(100)
     end
+
     it 'returns nil when relation semantics would drop compiler-only subquery policy predicates' do
       scope = double('scope')
       allow(scope).to receive_messages(where: scope, order: scope, limit: scope)
