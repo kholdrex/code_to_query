@@ -320,7 +320,10 @@ module CodeToQuery
     end
 
     def effective_lint_allow_tables
-      (Array(@allow_tables) + related_tables_from_filters(@intent['filters'])).compact.map(&:to_s).uniq
+      explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
+      return @allow_tables if explicit_tables.empty?
+
+      (explicit_tables + related_tables_from_filters(@intent['filters'])).compact.map(&:to_s).uniq
     end
 
     def related_tables_from_filters(filters)

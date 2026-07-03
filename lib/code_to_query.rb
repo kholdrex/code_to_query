@@ -124,9 +124,12 @@ module CodeToQuery
       row_limit: validated_intent['limit'],
       policy_applied: policy_applied
     }
+    query = Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+                      intent: compiled[:intent] || validated_intent, allow_tables: allow_tables, config: config)
+
     begin
       Instrumentation.instrument(:lint, **lint_payload) do
-        Guardrails::SqlLinter.new(config, allow_tables: allow_tables).check!(compiled[:sql])
+        query.send(:lint_sql!)
       end
     rescue SecurityError => e
       Instrumentation.instrument(
@@ -141,8 +144,7 @@ module CodeToQuery
       raise
     end
 
-    Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
-              intent: compiled[:intent] || validated_intent, allow_tables: allow_tables, config: config)
+    query
   end
 
   def self.query_shape(intent)

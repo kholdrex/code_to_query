@@ -102,6 +102,88 @@ RSpec.describe CodeToQuery do
       expect(query.intent).to eq(compiled_intent)
     end
 
+    it 'allows declared EXISTS related tables during ask linting' do
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+      linter = instance_double(CodeToQuery::Guardrails::SqlLinter)
+
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [
+          {
+            'column' => 'id',
+            'op' => 'exists',
+            'related_table' => 'answers',
+            'fk_column' => 'question_id',
+            'base_column' => 'id',
+            'related_filters' => []
+          }
+        ]
+      }
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(CodeToQuery::Guardrails::SqlLinter).to receive(:new)
+        .with(CodeToQuery.config, allow_tables: %w[questions answers])
+        .and_return(linter)
+
+      allow(planner).to receive(:plan).and_return(compiled_intent)
+      allow(validator).to receive(:validate).and_return(compiled_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        params: {},
+        bind_spec: [],
+        intent: compiled_intent
+      )
+      allow(linter).to receive(:check!)
+
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }.not_to raise_error
+    end
+
+    it 'does not invent a partial allowlist when ask is called without allow_tables' do
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+      linter = instance_double(CodeToQuery::Guardrails::SqlLinter)
+
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [
+          {
+            'column' => 'id',
+            'op' => 'exists',
+            'related_table' => 'answers',
+            'fk_column' => 'question_id',
+            'base_column' => 'id',
+            'related_filters' => []
+          }
+        ]
+      }
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(CodeToQuery::Guardrails::SqlLinter).to receive(:new)
+        .with(CodeToQuery.config, allow_tables: nil)
+        .and_return(linter)
+
+      allow(planner).to receive(:plan).and_return(compiled_intent)
+      allow(validator).to receive(:validate).and_return(compiled_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        params: {},
+        bind_spec: [],
+        intent: compiled_intent
+      )
+      allow(linter).to receive(:check!)
+
+      expect { described_class.ask(prompt: 'Get questions') }.not_to raise_error
+    end
+
     # rubocop:disable RSpec/ExampleLength
     it 'marks compile/lint telemetry as policy-applied when policy binds are present' do
       events = []

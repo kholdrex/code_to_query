@@ -352,6 +352,32 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'does not enforce a partial related-table allowlist when no explicit allow_tables are provided' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        params: {},
+        bind_spec: [],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ]
+        },
+        allow_tables: nil,
+        config: config
+      )
+
+      expect(q.safe?).to be true
+    end
+
     it 'still blocks related tables when SQL references them outside the declared EXISTS subquery' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions" JOIN "answers" ON "answers"."question_id" = "questions"."id" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
