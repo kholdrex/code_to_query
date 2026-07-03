@@ -383,7 +383,7 @@ RSpec.describe CodeToQuery::Query do
           ],
           '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
         },
-        allow_tables: ['questions', 'answers'],
+        allow_tables: %w[questions answers],
         config: config
       )
 
