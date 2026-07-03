@@ -35,7 +35,7 @@ RSpec.describe CodeToQuery do
       }
     end
 
-    def stub_ask_pipeline(compiled_intent:, allow_tables:, sql:)
+    def stub_ask_pipeline(compiled_intent:, allow_tables:, sql:, linter_error: nil)
       planner = instance_double(CodeToQuery::Planner)
       validator = instance_double(CodeToQuery::Validator)
       compiler = instance_double(CodeToQuery::Compiler)
@@ -56,7 +56,9 @@ RSpec.describe CodeToQuery do
         bind_spec: [],
         intent: compiled_intent
       )
-      allow(linter).to receive(:check!)
+      allow(linter).to receive(:check!) do
+        raise linter_error if linter_error
+      end
     end
 
     # rubocop:disable RSpec/MultipleExpectations,RSpec/ExampleLength
@@ -147,7 +149,8 @@ RSpec.describe CodeToQuery do
       stub_ask_pipeline(
         compiled_intent: compiled_intent,
         allow_tables: ['questions'],
-        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")'
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        linter_error: SecurityError.new("Table 'answers' is not in the allowed list: questions")
       )
 
       expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
