@@ -137,7 +137,7 @@ RSpec.describe CodeToQuery do
       expect(query.intent).to eq(compiled_intent)
     end
 
-    it 'allows declared EXISTS related tables during ask linting' do
+    it 'rejects EXISTS related tables unless they are explicitly allowed' do
       compiled_intent = {
         'table' => 'questions',
         'type' => 'select',
@@ -146,11 +146,12 @@ RSpec.describe CodeToQuery do
 
       stub_ask_pipeline(
         compiled_intent: compiled_intent,
-        allow_tables: %w[questions answers],
+        allow_tables: ['questions'],
         sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")'
       )
 
-      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }.not_to raise_error
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
+        .to raise_error(SecurityError, /allowed list/i)
     end
 
     it 'does not invent a partial allowlist when ask is called without allow_tables' do

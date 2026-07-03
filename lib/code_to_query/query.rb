@@ -333,16 +333,7 @@ module CodeToQuery
       explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
       return @allow_tables if explicit_tables.empty?
 
-      (explicit_tables + related_tables_from_filters(@intent['filters'])).compact.map(&:to_s).uniq
-    end
-
-    def related_tables_from_filters(filters)
-      Array(filters).flat_map do |filter|
-        nested_tables = related_tables_from_filters(filter['related_filters'])
-        direct_tables = %w[exists not_exists].include?(filter['op'].to_s) ? [filter['related_table']] : []
-
-        direct_tables + nested_tables
-      end
+      explicit_tables
     end
 
     def lint_sql!
