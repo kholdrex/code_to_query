@@ -36,6 +36,23 @@ RSpec.describe CodeToQuery::Query do
     stub_const('User', user_model)
   end
 
+  def build_scope_backed_question_model(scope)
+    stub_const('ActiveRecord', Module.new) unless defined?(ActiveRecord)
+    stub_const('ActiveRecord::Base', Class.new) unless defined?(ActiveRecord::Base)
+
+    question_model = Class.new(ActiveRecord::Base) do
+      def self.table_name = 'questions'
+      def self.all = @scope
+
+      class << self
+        attr_writer :scope
+      end
+    end
+
+    question_model.scope = scope
+    stub_const('Question', question_model)
+  end
+
   def build_policy_query(config)
     described_class.new(
       sql: 'SELECT * FROM "users" WHERE "active" = $1 AND "tenant_id" = $2 LIMIT 100',
@@ -54,6 +71,31 @@ RSpec.describe CodeToQuery::Query do
         'limit' => 100
       },
       allow_tables: ['users'],
+      config: config
+    )
+  end
+
+  def build_subquery_policy_query(config)
+    described_class.new(
+      sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+      params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+      bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+      intent: {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [
+          {
+            'column' => 'id',
+            'op' => 'exists',
+            'related_table' => 'answers',
+            'fk_column' => 'question_id',
+            'base_column' => 'id',
+            'related_filters' => []
+          }
+        ],
+        '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+      },
+      allow_tables: ['questions'],
       config: config
     )
   end
@@ -621,6 +663,14 @@ RSpec.describe CodeToQuery::Query do
       expect(scope).to have_received(:where).with('tenant_id' => 42).ordered
       expect(scope).to have_received(:limit).with(100)
     end
+    it 'returns nil when relation semantics would drop compiler-only subquery policy predicates' do
+      scope = double('scope')
+      allow(scope).to receive_messages(where: scope, order: scope, limit: scope)
+      build_scope_backed_question_model(scope)
+
+      expect(build_subquery_policy_query(config).to_relation).to be_nil
+      expect(scope).not_to have_received(:where)
+    end
   end
 
   describe '#to_active_record' do
@@ -634,6 +684,12 @@ RSpec.describe CodeToQuery::Query do
     it 'returns false when not a select' do
       q = described_class.new(sql: sql, params: params, bind_spec: bind_spec, intent: { 'type' => 'insert' }, allow_tables: ['users'], config: config)
       expect(q.relationable?).to be false
+    end
+
+    it 'returns false when relation semantics would drop compiler-only subquery policy predicates' do
+      build_scope_backed_question_model(double('scope'))
+
+      expect(build_subquery_policy_query(config).relationable?).to be false
     end
   end
 

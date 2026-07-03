@@ -87,7 +87,7 @@ module CodeToQuery
 
     def to_relation
       return nil unless defined?(ActiveRecord::Base)
-      return nil unless @intent['type'] == 'select'
+      return nil unless relationable?
 
       table_name = @intent['table']
       model = infer_model_for_table(table_name)
@@ -122,6 +122,7 @@ module CodeToQuery
     def relationable?
       return false unless defined?(ActiveRecord::Base)
       return false unless @intent['type'] == 'select'
+      return false if compiler_only_subquery_policy_filters?
 
       !!infer_model_for_table(@intent['table'])
     end
@@ -252,6 +253,15 @@ module CodeToQuery
       true
     rescue SecurityError
       false
+    end
+
+    def compiler_only_subquery_policy_filters?
+      Array(@intent['filters']).any? do |filter|
+        next false unless %w[exists not_exists].include?(filter['op'].to_s)
+
+        related_policy_keys = Array(@intent['__policy_expected_keys']).grep(/\Apolicy_subquery_/)
+        related_policy_keys.any?
+      end
     end
 
     def extract_metrics_from_intent(intent)
