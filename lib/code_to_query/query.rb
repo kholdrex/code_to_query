@@ -404,7 +404,8 @@ module CodeToQuery
 
     def extract_table_reference_name(reference)
       match = reference.to_s.strip.match(/\A(?:(?:`[^`]+`|"[^"]+"|'[^']+'|[a-zA-Z0-9_]+)\.)*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?\z/i)
-      match&.captures&.compact&.first
+      captures = match&.captures
+      captures&.compact&.first
     end
 
     def infer_column_type(connection, table_name, column_name, explicit_cast, param_key = column_name)
