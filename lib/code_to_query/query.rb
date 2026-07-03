@@ -248,7 +248,7 @@ module CodeToQuery
     end
 
     def preview_would_run?
-      Guardrails::SqlLinter.new(@config, allow_tables: @allow_tables).check!(@sql)
+      lint_sql!
       true
     rescue SecurityError
       false
@@ -268,7 +268,7 @@ module CodeToQuery
 
     def perform_safety_checks
       # Basic SQL structure checks
-      Guardrails::SqlLinter.new(@config, allow_tables: @allow_tables).check!(@sql)
+      lint_sql!
 
       # EXPLAIN-based performance checks
       return false if @config.enable_explain_gate && !Guardrails::ExplainGate.new(@config).allowed?(
@@ -317,6 +317,94 @@ module CodeToQuery
       end.compact.map(&:to_s).select { |key| key.start_with?('policy_') }
 
       (explicit_keys + filter_keys).uniq
+    end
+
+    def effective_lint_allow_tables
+      (Array(@allow_tables) + related_tables_from_filters(@intent['filters'])).compact.map(&:to_s).uniq
+    end
+
+    def related_tables_from_filters(filters)
+      Array(filters).flat_map do |filter|
+        nested_tables = related_tables_from_filters(filter['related_filters'])
+        direct_tables = %w[exists not_exists].include?(filter['op'].to_s) ? [filter['related_table']] : []
+
+        direct_tables + nested_tables
+      end
+    end
+
+    def lint_sql!
+      Guardrails::SqlLinter.new(@config, allow_tables: effective_lint_allow_tables).check!(@sql)
+      check_top_level_table_allowlist!
+    end
+
+    def check_top_level_table_allowlist!
+      allowed_tables = Array(@allow_tables).compact.map { |table| table.to_s.downcase }
+      return if allowed_tables.empty?
+
+      top_level_sql = strip_exists_subqueries(@sql)
+
+      raise SecurityError, 'Top-level common table expressions are not allowed' if top_level_sql.match?(/\A\s*WITH\b/i)
+      raise SecurityError, 'Top-level derived tables are not allowed' if top_level_sql.match?(/\b(?:FROM|JOIN)\s*\(/i)
+
+      extract_table_names(top_level_sql).each do |table|
+        next if allowed_tables.include?(table.to_s.downcase)
+
+        raise SecurityError, "Table '#{table}' is not in the allowed list: #{allowed_tables.join(', ')}"
+      end
+    end
+
+    def strip_exists_subqueries(sql)
+      source = sql.to_s
+      stripped = +''
+      index = 0
+
+      while index < source.length
+        match = /\b(?:NOT\s+)?EXISTS\s*\(/i.match(source, index)
+        break unless match
+
+        stripped << source[index...match.begin(0)]
+        stripped << 'TRUE'
+        index = skip_parenthesized_sql(source, match.end(0))
+      end
+
+      stripped << source[index..] if index < source.length
+      stripped
+    end
+
+    def skip_parenthesized_sql(source, index)
+      depth = 1
+
+      while index < source.length && depth.positive?
+        char = source[index]
+        depth += 1 if char == '('
+        depth -= 1 if char == ')'
+        index += 1
+      end
+
+      index
+    end
+
+    def extract_table_names(sql)
+      tables = []
+
+      sql.scan(/\bFROM\s+(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|\bJOIN\b|$)/im) do |match|
+        match.first.split(',').each do |reference|
+          table_name = extract_table_reference_name(reference)
+          tables << table_name if table_name
+        end
+      end
+
+      sql.scan(/\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+)?JOIN\s+(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|\bJOIN\b|$)/im) do |match|
+        table_name = extract_table_reference_name(match.first)
+        tables << table_name if table_name
+      end
+
+      tables.uniq
+    end
+
+    def extract_table_reference_name(reference)
+      match = reference.to_s.strip.match(/\A(?:(?:`[^`]+`|"[^"]+"|'[^']+'|[a-zA-Z0-9_]+)\.)*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?\z/i)
+      match&.captures&.compact&.first
     end
 
     def infer_column_type(connection, table_name, column_name, explicit_cast, param_key = column_name)

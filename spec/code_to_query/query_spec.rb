@@ -351,6 +351,168 @@ RSpec.describe CodeToQuery::Query do
     ensure
       config.policy_adapter = nil
     end
+
+    it 'still blocks related tables when SQL references them outside the declared EXISTS subquery' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" JOIN "answers" ON "answers"."question_id" = "questions"."id" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks related tables when SQL references them as an extra top-level FROM source' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions", "answers" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks schema-qualified related tables when SQL references them as an extra top-level FROM source' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions", public."answers" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks top-level derived tables that reference related tables outside the declared EXISTS subquery' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions", (SELECT * FROM "answers") leaked WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks top-level common table expressions that reference related tables outside the declared EXISTS subquery' do
+      q = described_class.new(
+        sql: 'WITH leaked AS (SELECT * FROM "answers") SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks top-level common table expressions with leading whitespace' do
+      q = described_class.new(
+        sql: '  WITH leaked AS (SELECT * FROM "answers") SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
   end
 
   describe '#explain' do
