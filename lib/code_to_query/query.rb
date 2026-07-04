@@ -407,7 +407,7 @@ module CodeToQuery
     end
 
     def extract_table_reference_name(reference)
-      match = reference.to_s.strip.match(/\A(?:(?:`[^`]+`|"[^"]+"|'[^']+'|[a-zA-Z0-9_]+)\.)*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?\z/i)
+      match = reference.to_s.strip.match(/\A(?:(?:`[^`]+`|"[^"]+"|'[^']+'|[a-zA-Z0-9_]+)\.)*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?(?:`[^`]+`|"[^"]+"|'[^']+'|[a-zA-Z_][a-zA-Z0-9_]*))?\z/i)
       captures = match&.captures
       captures&.compact&.first
     end
