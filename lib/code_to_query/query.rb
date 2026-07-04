@@ -348,7 +348,7 @@ module CodeToQuery
       top_level_sql = strip_exists_subqueries(@sql)
 
       raise SecurityError, 'Top-level common table expressions are not allowed' if top_level_sql.match?(/\A\s*WITH\b/i)
-      raise SecurityError, 'Top-level derived tables are not allowed' if top_level_sql.match?(/(?:\bFROM\b|\bJOIN\b(?:\s+LATERAL)?|,)\s*\(/i)
+      raise SecurityError, 'Top-level derived tables are not allowed' if top_level_sql.match?(/(?:\bFROM\b|\bJOIN\b|,)\s*(?:LATERAL\s+)?\(/i)
 
       extract_table_names(top_level_sql).each do |table|
         next if allowed_tables.include?(table.to_s.downcase)

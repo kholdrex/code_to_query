@@ -555,6 +555,60 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'still blocks top-level lateral derived tables in FROM sources' do
+      q = described_class.new(
+        sql: 'SELECT * FROM LATERAL (SELECT * FROM "answers") leaked, "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks comma lateral derived tables that reference related tables outside the declared EXISTS subquery' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions", LATERAL (SELECT * FROM "answers") leaked WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'still blocks top-level common table expressions that reference related tables outside the declared EXISTS subquery' do
       q = described_class.new(
         sql: 'WITH leaked AS (SELECT * FROM "answers") SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
