@@ -157,6 +157,24 @@ RSpec.describe CodeToQuery do
         .to raise_error(SecurityError, /allowed list/i)
     end
 
+    it 'rejects top-level lateral derived tables that reference unallowed tables' do
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [exists_related_filter]
+      }
+
+      stub_ask_pipeline(
+        compiled_intent: compiled_intent,
+        allow_tables: ['questions'],
+        sql: 'SELECT * FROM "questions" JOIN LATERAL (SELECT * FROM "answers") leaked ON TRUE WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        linter_error: SecurityError.new('Top-level derived tables are not allowed')
+      )
+
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
+        .to raise_error(SecurityError, /derived tables are not allowed/i)
+    end
+
     it 'does not invent a partial allowlist when ask is called without allow_tables' do
       compiled_intent = {
         'table' => 'questions',
