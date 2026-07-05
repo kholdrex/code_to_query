@@ -329,6 +329,7 @@ module CodeToQuery
       explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
       policy_tables = Array(@intent['__policy_allowed_tables']).compact.map(&:to_s).uniq
 
+      return @allow_tables if explicit_tables.empty? && policy_tables.empty?
       return policy_tables if explicit_tables.empty?
       return explicit_tables if policy_tables.empty?
 
