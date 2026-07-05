@@ -338,7 +338,18 @@ module CodeToQuery
       normalized_explicit_tables & normalized_policy_tables
     end
 
+    def allowlist_sources_present?
+      explicit_tables = Array(@allow_tables).compact
+      policy_tables = Array(@intent['__policy_allowed_tables']).compact
+
+      explicit_tables.any? || policy_tables.any?
+    end
+
     def lint_sql!
+      if allowlist_sources_present? && Array(effective_lint_allow_tables).empty?
+        raise SecurityError, 'No tables remain after intersecting explicit and policy allowlists'
+      end
+
       Guardrails::SqlLinter.new(@config, allow_tables: effective_lint_allow_tables).check!(@sql)
       check_top_level_table_allowlist!
     end
