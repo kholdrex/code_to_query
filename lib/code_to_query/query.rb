@@ -232,16 +232,13 @@ module CodeToQuery
     end
 
     def applied_policy_keys
-      # Policy predicates compiled by CodeToQuery use policy-prefixed bind keys.
-      # Surface only those keys so preview callers can audit policy application
-      # without exposing bind values through telemetry.
-      keys = Array(@bind_spec).filter_map do |bind|
+      # Policy predicates compiled by CodeToQuery must surface as policy-prefixed
+      # bind keys. Surface only those bound keys so preview callers can audit
+      # policy application without trusting raw params or exposing bind values.
+      Array(@bind_spec).filter_map do |bind|
         key = bind[:key]
         key.to_s if key.to_s.start_with?('policy_')
-      end
-
-      keys.concat(@params.keys.filter_map { |key| key.to_s if key.to_s.start_with?('policy_') })
-      keys.uniq
+      end.uniq
     end
 
     def policy_applied?
@@ -311,7 +308,6 @@ module CodeToQuery
       return true if expected_keys.empty?
 
       present_keys = Array(@bind_spec).filter_map { |bind| bind[:key]&.to_s }
-      present_keys.concat(@params.keys.map(&:to_s))
 
       expected_keys.all? { |key| present_keys.include?(key) }
     end

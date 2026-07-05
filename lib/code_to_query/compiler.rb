@@ -503,7 +503,7 @@ module CodeToQuery
     def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user, intent)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
-      info = safely_fetch_policy(table: related_table, current_user: current_user)
+      info = safely_fetch_policy(table: related_table, current_user: current_user, intent: intent)
       predicates = extract_enforced_predicates(info)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 

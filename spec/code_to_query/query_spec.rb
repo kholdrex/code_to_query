@@ -361,7 +361,7 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
-    it 'returns true when expected subquery policy keys are present in binds and params' do
+    it 'returns true when expected subquery policy keys are present in binds' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
 
       q = described_class.new(
@@ -390,6 +390,37 @@ RSpec.describe CodeToQuery::Query do
       allow(q).to receive(:perform_safety_checks).and_call_original
 
       expect(q.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'returns false when expected subquery policy keys are present only in params' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: %w[questions answers],
+        config: config
+      )
+
+      expect(q.safe?).to be false
     ensure
       config.policy_adapter = nil
     end

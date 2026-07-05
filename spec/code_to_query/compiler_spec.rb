@@ -1037,6 +1037,24 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:sql]).to include('"line_items"."account_id" = $1')
         expect(result[:params][subquery_key]).to eq(7)
       end
+
+      it 'passes the parent intent when applying subquery policies' do
+        observed_intents = []
+        config.policy_adapter = lambda do |_user, **kwargs|
+          observed_intents << kwargs[:intent] if kwargs[:table] == 'line_items'
+
+          kwargs[:table] == 'line_items' ? { enforced_predicates: { account_id: 7 } } : {}
+        end
+
+        result = compile_with_related_filters(
+          table: 'orders',
+          filters: [related_filter('line_items', fk_column: 'order_id')],
+          current_user: { account_id: 7 }
+        )
+
+        expect(observed_intents).to contain_exactly(include('table' => 'orders', 'filters' => [include('related_table' => 'line_items')]))
+        expect(result[:params]['policy_subquery_1_line_items_account_id']).to eq(7)
+      end
     end
   end
 end
