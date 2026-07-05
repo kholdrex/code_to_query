@@ -328,12 +328,14 @@ module CodeToQuery
     def effective_lint_allow_tables
       explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
       policy_tables = Array(@intent['__policy_allowed_tables']).compact.map(&:to_s).uniq
+      normalized_explicit_tables = explicit_tables.map(&:downcase).uniq
+      normalized_policy_tables = policy_tables.map(&:downcase).uniq
 
       return @allow_tables if explicit_tables.empty? && policy_tables.empty?
-      return policy_tables if explicit_tables.empty?
-      return explicit_tables if policy_tables.empty?
+      return normalized_policy_tables if explicit_tables.empty?
+      return normalized_explicit_tables if policy_tables.empty?
 
-      explicit_tables & policy_tables
+      normalized_explicit_tables & normalized_policy_tables
     end
 
     def lint_sql!

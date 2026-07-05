@@ -478,6 +478,33 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'enforces policy-derived allowlists even when explicit allow_tables casing differs' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        params: {},
+        bind_spec: [],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          '__policy_allowed_tables' => ['questions'],
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ]
+        },
+        allow_tables: ['Questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'still blocks related tables when SQL references them outside the declared EXISTS subquery' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions" JOIN "answers" ON "answers"."question_id" = "questions"."id" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
