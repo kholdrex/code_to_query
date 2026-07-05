@@ -147,6 +147,9 @@ module CodeToQuery
 
       allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map { |t| t.to_s.downcase }
       if allowed_tables.any?
+        intent[:__policy_allowed_tables] = allowed_tables
+        intent['__policy_allowed_tables'] = allowed_tables
+
         table = fetch_value(intent, :table)
         if (table.to_s.strip != '') && !allowed_tables.include?(table.to_s.downcase)
           raise ArgumentError, "Invalid intent: table '#{table}' not permitted by policy"

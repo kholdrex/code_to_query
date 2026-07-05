@@ -191,6 +191,34 @@ RSpec.describe CodeToQuery do
       expect { described_class.ask(prompt: 'Get questions') }.not_to raise_error
     end
 
+    it 'rejects EXISTS related tables that fall outside the policy adapter allowlist' do
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [exists_related_filter],
+        '__policy_allowed_tables' => ['questions']
+      }
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(planner).to receive(:plan).and_return(compiled_intent)
+      allow(validator).to receive(:validate).and_return(compiled_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        params: {},
+        bind_spec: [],
+        intent: compiled_intent
+      )
+
+      expect { described_class.ask(prompt: 'Get questions') }
+        .to raise_error(SecurityError, /allowed list/i)
+    end
+
     # rubocop:disable RSpec/ExampleLength
     it 'marks compile/lint telemetry as policy-applied when policy binds are present' do
       events = []

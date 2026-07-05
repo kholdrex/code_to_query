@@ -327,9 +327,12 @@ module CodeToQuery
 
     def effective_lint_allow_tables
       explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
-      return @allow_tables if explicit_tables.empty?
+      policy_tables = Array(@intent['__policy_allowed_tables']).compact.map(&:to_s).uniq
 
-      explicit_tables
+      return policy_tables if explicit_tables.empty?
+      return explicit_tables if policy_tables.empty?
+
+      explicit_tables & policy_tables
     end
 
     def lint_sql!
@@ -338,7 +341,7 @@ module CodeToQuery
     end
 
     def check_top_level_table_allowlist!
-      allowed_tables = Array(@allow_tables).compact.map { |table| table.to_s.downcase }
+      allowed_tables = Array(effective_lint_allow_tables).compact.map { |table| table.to_s.downcase }
       return if allowed_tables.empty?
 
       top_level_sql = strip_exists_subqueries(@sql)

@@ -330,6 +330,17 @@ RSpec.describe CodeToQuery::Validator do
         result = validator.validate(intent)
         expect(result[:columns]).to eq(['*'])
       end
+
+      it 'records policy-allowed tables for downstream SQL linting' do
+        intent = {
+          'type' => 'select',
+          'table' => 'users',
+          'columns' => ['*']
+        }
+
+        result = validator.validate(intent)
+        expect(result[:__policy_allowed_tables]).to eq(%w[users orders])
+      end
     end
   end
 
