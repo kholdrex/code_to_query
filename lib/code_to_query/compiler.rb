@@ -504,6 +504,7 @@ module CodeToQuery
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
       info = safely_fetch_policy(table: related_table, current_user: current_user, intent: intent)
+      merge_policy_allowed_tables!(intent, info)
       predicates = extract_enforced_predicates(info)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 
@@ -560,6 +561,17 @@ module CodeToQuery
 
     def merge_policy_expected_keys!(intent, *keys)
       intent['__policy_expected_keys'] = merge_policy_expected_keys(intent, keys.flatten)
+    end
+
+    def merge_policy_allowed_tables!(intent, policy_info)
+      return unless policy_info.is_a?(Hash)
+
+      allowed_tables = Array(policy_info[:allowed_tables] || policy_info['allowed_tables']).map do |table|
+        table.to_s.downcase
+      end.reject(&:empty?)
+      return if allowed_tables.empty?
+
+      intent['__policy_allowed_tables'] = (Array(intent['__policy_allowed_tables']) + allowed_tables).uniq
     end
 
     def deep_dup_value(value)

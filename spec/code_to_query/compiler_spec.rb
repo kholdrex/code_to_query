@@ -947,6 +947,26 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:intent]['__policy_expected_keys']).to include(subquery_key)
       end
 
+      it 'records related-table allowlists returned by the subquery policy adapter' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          case kwargs[:table]
+          when 'questions'
+            { allowed_tables: ['questions'] }
+          when 'answers'
+            {
+              allowed_tables: %w[questions answers],
+              enforced_predicates: { tenant_id: 42 }
+            }
+          else
+            {}
+          end
+        end
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+
+        expect(result[:intent]['__policy_allowed_tables']).to eq(%w[questions answers])
+      end
+
       it 'does not mutate the caller intent while recording subquery policy expectations' do
         config.policy_adapter = lambda do |_user, **kwargs|
           kwargs[:table] == 'answers' ? { enforced_predicates: { tenant_id: 42 } } : {}
