@@ -640,6 +640,34 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'still blocks related tables when SQL reuses them in a non-EXISTS nested subquery' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE id IN (SELECT "answers"."question_id" FROM "answers" WHERE "answers"."tenant_id" = $1) AND EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          '__policy_allowed_tables' => %w[questions answers],
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: nil,
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'still blocks top-level derived tables that reference related tables outside the declared EXISTS subquery' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions", (SELECT * FROM "answers") leaked WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',

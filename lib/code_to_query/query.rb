@@ -352,6 +352,7 @@ module CodeToQuery
 
       Guardrails::SqlLinter.new(@config, allow_tables: effective_lint_allow_tables).check!(@sql)
       check_top_level_table_allowlist!
+      check_policy_scoped_related_table_references!
     end
 
     def check_top_level_table_allowlist!
@@ -368,6 +369,29 @@ module CodeToQuery
 
         raise SecurityError, "Table '#{table}' is not in the allowed list: #{allowed_tables.join(', ')}"
       end
+    end
+
+    def check_policy_scoped_related_table_references!
+      policy_scoped_related_tables = declared_related_tables_outside_explicit_allowlist
+      return if policy_scoped_related_tables.empty?
+
+      extract_table_names(strip_exists_subqueries(@sql)).each do |table|
+        next unless policy_scoped_related_tables.include?(table.to_s.downcase)
+
+        raise SecurityError,
+              "Table '#{table}' is only allowed inside declared EXISTS/NOT EXISTS filters"
+      end
+    end
+
+    def declared_related_tables_outside_explicit_allowlist
+      explicit_tables = Array(@allow_tables).compact.map { |table| table.to_s.downcase }
+
+      Array(@intent['filters']).filter_map do |filter|
+        op = filter['op'].to_s.downcase
+        next unless %w[exists not_exists].include?(op)
+
+        filter['related_table']&.to_s&.downcase
+      end.reject { |table| table.nil? || explicit_tables.include?(table) }.uniq
     end
 
     def strip_exists_subqueries(sql)
