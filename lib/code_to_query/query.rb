@@ -428,19 +428,23 @@ module CodeToQuery
     def extract_table_names(sql)
       tables = []
 
-      sql.scan(/\bFROM\s+(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|\bJOIN\b|$)/im) do |match|
+      sql.scan(/\bFROM\s+(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|$)/im) do |match|
         match.first.split(',').each do |reference|
           table_name = extract_table_reference_name(reference)
           tables << table_name if table_name
         end
       end
 
-      sql.scan(/\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+)?JOIN\s+(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|\bJOIN\b|$)/im) do |match|
+      sql.scan(/#{join_clause_pattern}\s+(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|$)/im) do |match|
         table_name = extract_table_reference_name(match.first)
         tables << table_name if table_name
       end
 
       tables.uniq
+    end
+
+    def join_clause_pattern
+      /\b(?:INNER\s+|(?:LEFT|RIGHT|FULL)(?:\s+OUTER)?\s+|CROSS\s+|NATURAL\s+(?:(?:LEFT|RIGHT|FULL)(?:\s+OUTER)?\s+)?)?JOIN\b/i
     end
 
     def extract_table_reference_name(reference)

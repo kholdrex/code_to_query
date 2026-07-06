@@ -586,6 +586,60 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'still blocks related tables when SQL references them through a LEFT OUTER JOIN' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" LEFT OUTER JOIN "answers" ON "answers"."question_id" = "questions"."id" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'still blocks related tables when SQL references them through a NATURAL JOIN' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" NATURAL JOIN "answers" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'still blocks related tables when SQL references them as an extra top-level FROM source' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions", "answers" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
