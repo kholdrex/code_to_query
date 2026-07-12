@@ -455,7 +455,7 @@ RSpec.describe CodeToQuery::Query do
     end
 
     it 'ignores parentheses in EXISTS comments while identifying the subquery boundary' do
-      sql = "SELECT * FROM \"questions\" WHERE EXISTS (SELECT 1 FROM \"answers\" /* ) */ WHERE TRUE)"
+      sql = 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" /* ) */ WHERE TRUE)'
       q = described_class.new(
         sql: sql,
         params: {}, bind_spec: [],
