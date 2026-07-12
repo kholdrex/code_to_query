@@ -17,12 +17,15 @@ module CodeToQuery
 
     def compile(intent, current_user: nil)
       working_intent = deep_dup_value(intent)
+      strip_untrusted_policy_expectations!(working_intent)
       intent_with_policy = apply_policy_predicates(working_intent, current_user)
-      if use_arel?
-        compile_with_arel(intent_with_policy, current_user)
-      else
-        compile_with_string_building(intent_with_policy, current_user)
-      end
+      result = if use_arel?
+                 compile_with_arel(intent_with_policy, current_user)
+               else
+                 compile_with_string_building(intent_with_policy, current_user)
+               end
+      verify_compiled_policy_binds!(result)
+      result
     end
 
     private
@@ -86,11 +89,15 @@ module CodeToQuery
       else
         @config.policy_adapter.call(current_user, table: table)
       end
-    rescue ArgumentError
+    rescue ArgumentError => e
+      raise unless policy_signature_mismatch?(e)
+
       # Backward compatibility: adapters may accept user plus table or only user.
       begin
         @config.policy_adapter.call(current_user, table: table)
-      rescue ArgumentError
+      rescue ArgumentError => fallback_error
+        raise fallback_error unless policy_signature_mismatch?(fallback_error)
+
         begin
           @config.policy_adapter.call(current_user)
         rescue StandardError => e
@@ -117,10 +124,16 @@ module CodeToQuery
 
       predicates = policy_info[:enforced_predicates] || policy_info['enforced_predicates'] ||
                    policy_info[:predicates] || policy_info['predicates']
+      explicit_predicate_contract = policy_info.keys.any? do |key|
+        %w[enforced_predicates predicates].include?(key.to_s)
+      end
       predicates = policy_info if predicates.nil? && direct_predicate_hash?(policy_info)
       predicates ||= {}
       unless predicates.is_a?(Hash)
         return handle_policy_failure("Policy predicates must be a Hash, got #{predicates.class}")
+      end
+      if explicit_predicate_contract && predicates.empty?
+        return handle_policy_failure('Policy adapter returned an empty predicate contract')
       end
 
       predicates.each do |column, value|
@@ -139,6 +152,10 @@ module CodeToQuery
         %i[enforced_predicates predicates allowed_tables allowed_columns].include?(key) ||
           %w[enforced_predicates predicates allowed_tables allowed_columns].include?(key.to_s)
       end
+    end
+
+    def policy_signature_mismatch?(error)
+      error.message.match?(/unknown keyword.*intent|wrong number of arguments|no keywords accepted/)
     end
 
     def policy_adapter_fail_open?
@@ -572,6 +589,25 @@ module CodeToQuery
       return if allowed_tables.empty?
 
       intent['__policy_allowed_tables'] = (Array(intent['__policy_allowed_tables']) + allowed_tables).uniq
+    end
+
+    def strip_untrusted_policy_expectations!(intent)
+      intent.delete('__policy_expected_keys')
+      intent.delete(:__policy_expected_keys)
+    end
+
+    # Independent compiler backstop: metadata alone never proves that a policy
+    # predicate was emitted. Every expected key must have both a bind and value.
+    def verify_compiled_policy_binds!(result)
+      expected = Array(result.dig(:intent, '__policy_expected_keys')).map(&:to_s)
+      return if expected.empty?
+
+      binds = Array(result[:bind_spec]).filter_map { |bind| bind[:key]&.to_s }
+      params = (result[:params] || {}).keys.map(&:to_s)
+      missing = expected.reject { |key| binds.include?(key) && params.include?(key) }
+      return if missing.empty?
+
+      raise PolicyAdapterError, "Compiled policy binds are missing: #{missing.join(', ')}"
     end
 
     def deep_dup_value(value)

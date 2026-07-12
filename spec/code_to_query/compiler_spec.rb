@@ -839,6 +839,24 @@ RSpec.describe CodeToQuery::Compiler do
         )
       end
 
+      it 'fails closed when an explicit predicate contract yields no predicates' do
+        config.policy_adapter = ->(_user, **) { { enforced_predicates: {} } }
+
+        expect { compiler.compile(intent) }.to raise_error(
+          CodeToQuery::PolicyAdapterError, /empty predicate contract/
+        )
+      end
+
+      it 'does not swallow errors raised inside an intent-aware strict keyword adapter' do
+        config.policy_adapter = lambda do |_user, table:, intent:|
+          raise ArgumentError, "policy rejected #{table}" if intent
+        end
+
+        expect { compiler.compile(intent) }.to raise_error(
+          CodeToQuery::PolicyAdapterError, /policy rejected orders/
+        )
+      end
+
       it 'documents explicit availability mode by allowing fail open only when configured' do
         config.policy_adapter_fail_open = true
         config.policy_adapter = ->(_user, **) { raise 'policy service unavailable' }
@@ -945,6 +963,29 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:params][subquery_key]).to eq(42)
         expect(result[:bind_spec]).to include(hash_including(key: subquery_key, column: :tenant_id))
         expect(result[:intent]['__policy_expected_keys']).to include(subquery_key)
+      end
+
+      it 'enforces related-table policy when Arel compilation is selected' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          kwargs[:table] == 'answers' ? { enforced_predicates: { tenant_id: 42 } } : {}
+        end
+        allow(compiler).to receive(:use_arel?).and_return(true)
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+
+        expect(result[:sql]).to include('EXISTS', '"answers"."tenant_id" = $1')
+        expect(result[:params]).to include('policy_subquery_1_answers_tenant_id' => 42)
+        expect(result[:bind_spec]).to include(hash_including(key: 'policy_subquery_1_answers_tenant_id'))
+      end
+
+      it 'discards caller-supplied policy expectation metadata' do
+        config.policy_adapter = ->(_user, **) { {} }
+        result = compiler.compile(
+          'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
+          '__policy_expected_keys' => ['policy_attacker']
+        )
+
+        expect(result[:intent]).not_to have_key('__policy_expected_keys')
       end
 
       it 'records related-table allowlists returned by the subquery policy adapter' do

@@ -425,6 +425,55 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'returns false for NOT EXISTS when expected policy binds have no parameter value' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE NOT EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1)',
+        params: {},
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions', 'type' => 'select',
+          'filters' => [{ 'column' => 'id', 'op' => 'not_exists', 'related_table' => 'answers', 'fk_column' => 'question_id' }],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: %w[questions answers], config: config
+      )
+
+      expect(q.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'does not let EXISTS-like text in a literal hide a disallowed table' do
+      q = described_class.new(
+        sql: %(SELECT 'EXISTS (ignored)' FROM "questions" JOIN "answers" ON TRUE),
+        params: {}, bind_spec: [], intent: { 'table' => 'questions', 'type' => 'select' },
+        allow_tables: ['questions'], config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'ignores parentheses in EXISTS comments while identifying the subquery boundary' do
+      q = described_class.new(
+        sql: "SELECT * FROM \"questions\" WHERE EXISTS (SELECT 1 FROM \"answers\" /* ) */ WHERE TRUE)",
+        params: {}, bind_spec: [],
+        intent: { 'table' => 'questions', 'type' => 'select', 'filters' => [{ 'op' => 'exists', 'related_table' => 'answers' }] },
+        allow_tables: ['questions'], config: config
+      )
+
+      expect(q.safe?).to be true
+    end
+
+    it 'fails closed for an unparseable top-level table reference' do
+      q = described_class.new(
+        sql: 'SELECT * FROM ONLY "questions"', params: {}, bind_spec: [],
+        intent: { 'table' => 'questions', 'type' => 'select' }, allow_tables: ['questions'], config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'does not enforce a partial related-table allowlist when no explicit allow_tables are provided' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',

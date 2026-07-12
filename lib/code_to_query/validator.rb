@@ -237,10 +237,14 @@ module CodeToQuery
 
     def safe_call_policy_adapter(adapter, current_user, table:, intent:)
       adapter.call(current_user, table: table, intent: intent)
-    rescue ArgumentError
+    rescue ArgumentError => e
+      raise unless policy_signature_mismatch?(e)
+
       begin
         adapter.call(current_user, table: table)
-      rescue ArgumentError
+      rescue ArgumentError => fallback_error
+        raise fallback_error unless policy_signature_mismatch?(fallback_error)
+
         begin
           adapter.call(current_user)
         rescue StandardError => e
@@ -260,6 +264,10 @@ module CodeToQuery
       end
 
       raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
+    end
+
+    def policy_signature_mismatch?(error)
+      error.message.match?(/unknown keyword.*intent|wrong number of arguments|no keywords accepted/)
     end
 
     def handle_policy_failure(message)
