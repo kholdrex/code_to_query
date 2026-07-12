@@ -146,7 +146,7 @@ module CodeToQuery
       def extract_table_names(sql)
         tables = []
 
-        sql.scan(/\bFROM\s+(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|$)/im) do |match|
+        sql.scan(/\bFROM\s+(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im) do |match|
           match.first.split(',').each do |reference|
             table_name = extract_table_reference_name(reference)
             raise SecurityError, "Unsupported FROM reference: #{reference.to_s.strip}" unless table_name
@@ -155,7 +155,7 @@ module CodeToQuery
           end
         end
 
-        sql.scan(/#{join_clause_pattern}\s+(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|$)/im) do |match|
+        sql.scan(/#{join_clause_pattern}\s+(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im) do |match|
           table_name = extract_table_reference_name(match.first)
           raise SecurityError, "Unsupported JOIN reference: #{match.first.to_s.strip}" unless table_name
 

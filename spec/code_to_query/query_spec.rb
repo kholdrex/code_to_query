@@ -476,6 +476,15 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'rejects a disallowed FROM table continued on a second line' do
+      q = described_class.new(
+        sql: "SELECT * FROM \"questions\",\n\"answers\"", params: {}, bind_spec: [],
+        intent: { 'table' => 'questions', 'type' => 'select' }, allow_tables: ['questions'], config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'does not enforce a partial related-table allowlist when no explicit allow_tables are provided' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
