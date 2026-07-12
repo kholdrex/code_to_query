@@ -1016,14 +1016,28 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:intent]['__policy_allowed_tables']).to eq(['questions'])
       end
 
-      it 'preserves an explicitly empty related policy allowlist as deny all' do
+      it 'rejects an explicitly empty related policy allowlist' do
         config.policy_adapter = lambda do |_user, **kwargs|
           kwargs[:table] == 'questions' ? { allowed_tables: ['questions'] } : { allowed_tables: [] }
         end
 
-        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        expect do
+          compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy does not allow related table: answers/)
+      end
 
-        expect(result[:intent]['__policy_allowed_tables']).to eq([])
+      it 'rejects a related table omitted by its own policy response despite the outer allowlist' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          if kwargs[:table] == 'questions'
+            { allowed_tables: %w[questions answers] }
+          else
+            { allowed_tables: ['questions'] }
+          end
+        end
+
+        expect do
+          compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy does not allow related table: answers/)
       end
 
       it 'records related-table allowlists returned by the subquery policy adapter' do

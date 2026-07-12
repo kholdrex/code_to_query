@@ -516,7 +516,7 @@ module CodeToQuery
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
       info = safely_fetch_policy(table: related_table, current_user: current_user, intent: intent)
-      merge_policy_allowed_tables!(intent, info)
+      merge_policy_allowed_tables!(intent, info, required_table: related_table)
       predicates = extract_enforced_predicates(info)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 
@@ -575,7 +575,7 @@ module CodeToQuery
       intent['__policy_expected_keys'] = merge_policy_expected_keys(intent, keys.flatten)
     end
 
-    def merge_policy_allowed_tables!(intent, policy_info)
+    def merge_policy_allowed_tables!(intent, policy_info, required_table: nil)
       return unless policy_info.is_a?(Hash)
 
       present = policy_info.key?(:allowed_tables) || policy_info.key?('allowed_tables')
@@ -583,6 +583,10 @@ module CodeToQuery
 
       value = policy_info.key?(:allowed_tables) ? policy_info[:allowed_tables] : policy_info['allowed_tables']
       allowed_tables = Array(value).map { |table| table.to_s.downcase }.reject(&:empty?)
+      if required_table && !allowed_tables.include?(required_table.to_s.downcase)
+        raise PolicyAdapterError, "Policy does not allow related table: #{required_table}"
+      end
+
       if intent.key?('__policy_allowed_tables')
         existing = Array(intent['__policy_allowed_tables'])
         intent['__policy_allowed_tables'] = if existing.empty? || allowed_tables.empty?
