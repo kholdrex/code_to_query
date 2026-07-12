@@ -65,11 +65,19 @@ module CodeToQuery
       def skip_parenthesized_sql(source, index)
         depth = 1
         state = :code
+        dollar_quote_delimiter = nil
 
         while index < source.length && depth.positive?
           char = source[index]
           following = source[index + 1]
           case state
+          when :dollar_quote
+            if source[index, dollar_quote_delimiter.length] == dollar_quote_delimiter
+              index += dollar_quote_delimiter.length
+              state = :code
+              dollar_quote_delimiter = nil
+              next
+            end
           when :single_quote
             if char == "'" && following == "'"
               index += 2
@@ -93,7 +101,12 @@ module CodeToQuery
               next
             end
           else
-            if char == "'"
+            if (delimiter = dollar_quote_delimiter_at(source, index))
+              state = :dollar_quote
+              dollar_quote_delimiter = delimiter
+              index += delimiter.length
+              next
+            elsif char == "'"
               state = :single_quote
             elsif char == '"'
               state = :double_quote
@@ -125,11 +138,21 @@ module CodeToQuery
       def mask_sql_literals_and_comments(source)
         masked = source.dup
         state = :code
+        dollar_quote_delimiter = nil
         index = 0
         while index < source.length
           char = source[index]
           following = source[index + 1]
           case state
+          when :dollar_quote
+            if source[index, dollar_quote_delimiter.length] == dollar_quote_delimiter
+              masked[index, dollar_quote_delimiter.length] = ' ' * dollar_quote_delimiter.length
+              index += dollar_quote_delimiter.length
+              state = :code
+              dollar_quote_delimiter = nil
+              next
+            end
+            masked[index] = ' '
           when :single_quote
             masked[index] = ' '
             if char == "'" && following == "'"
@@ -153,7 +176,13 @@ module CodeToQuery
               index += 1
             end
           else
-            if char == "'"
+            if (delimiter = dollar_quote_delimiter_at(source, index))
+              masked[index, delimiter.length] = ' ' * delimiter.length
+              state = :dollar_quote
+              dollar_quote_delimiter = delimiter
+              index += delimiter.length
+              next
+            elsif char == "'"
               masked[index] = ' '
               state = :single_quote
             elsif char == '"'
@@ -175,6 +204,13 @@ module CodeToQuery
         raise SecurityError, 'Unterminated SQL literal or comment' unless %i[code line_comment].include?(state)
 
         masked
+      end
+
+      # PostgreSQL dollar-quote tags follow unquoted identifier rules (without
+      # dollar signs); the empty tag is valid too. In particular, $1 is a bind,
+      # not the start of a dollar-quoted literal.
+      def dollar_quote_delimiter_at(source, index)
+        source[index..]&.match(/\A\$(?:[a-zA-Z_][a-zA-Z0-9_]*)?\$/)&.[](0)
       end
 
       public
