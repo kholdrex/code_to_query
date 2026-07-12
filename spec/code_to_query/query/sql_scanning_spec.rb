@@ -39,6 +39,17 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
   end
 
   describe '#extract_table_names' do
+    it 'does not let identifier quotes inside string literals hide executable table references' do
+      expect(scanner.extract_table_names(%q(SELECT '"' FROM"forbidden"))).to eq(['forbidden'])
+      expect(scanner.extract_table_names("SELECT '`' FROM`forbidden`")).to eq(['forbidden'])
+    end
+
+    it 'does not let identifier quotes inside dollar-quoted literals hide executable table references' do
+      sql = 'SELECT $body$`$body$ FROM "allowed" JOIN"forbidden" ON TRUE'
+
+      expect(scanner.extract_table_names(sql)).to eq(%w[allowed forbidden])
+    end
+
     it 'extracts quoted FROM and JOIN identifiers without intervening whitespace' do
       sql = 'SELECT * FROM"questions" JOIN"answers" ON "answers"."question_id" = "questions"."id"'
 
@@ -49,6 +60,10 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       sql = 'SELECT * FROM "questions" AS "JOIN decoy" JOIN"answers WHERE decoy" ON TRUE'
 
       expect(scanner.extract_table_names(sql)).to eq(['questions', 'answers WHERE decoy'])
+    end
+
+    it 'does not split a FROM reference on a comma inside a quoted identifier' do
+      expect(scanner.extract_table_names('SELECT * FROM "questions, archived"')).to eq(['questions, archived'])
     end
   end
 end

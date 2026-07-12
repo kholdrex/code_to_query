@@ -263,7 +263,7 @@ module CodeToQuery
             else
               masked[index] = ' '
             end
-          elsif ['"', '`'].include?(char)
+          elsif ['"', '`'].include?(char) && masked[index] == char
             quote = char
           end
           index += 1
