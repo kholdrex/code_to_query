@@ -586,10 +586,10 @@ module CodeToQuery
       if intent.key?('__policy_allowed_tables')
         existing = Array(intent['__policy_allowed_tables'])
         intent['__policy_allowed_tables'] = if existing.empty? || allowed_tables.empty?
-                                               []
-                                             else
-                                               (existing + allowed_tables).uniq
-                                             end
+                                              []
+                                            else
+                                              (existing + allowed_tables).uniq
+                                            end
       else
         intent['__policy_allowed_tables'] = allowed_tables
       end

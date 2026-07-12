@@ -120,6 +120,7 @@ module CodeToQuery
             between = true if depth.zero?
           when 'AND'
             next unless depth.zero?
+
             if between
               between = false
             else
