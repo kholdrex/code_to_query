@@ -980,10 +980,12 @@ RSpec.describe CodeToQuery::Compiler do
 
       it 'discards caller-supplied policy expectation metadata' do
         config.policy_adapter = ->(_user, **) { {} }
-        result = compiler.compile(
+        untrusted_intent = {
           'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
           '__policy_expected_keys' => ['policy_attacker']
-        )
+        }
+
+        result = compiler.compile(untrusted_intent)
 
         expect(result[:intent]).not_to have_key('__policy_expected_keys')
       end

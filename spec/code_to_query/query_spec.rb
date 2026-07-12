@@ -455,14 +455,16 @@ RSpec.describe CodeToQuery::Query do
     end
 
     it 'ignores parentheses in EXISTS comments while identifying the subquery boundary' do
+      sql = "SELECT * FROM \"questions\" WHERE EXISTS (SELECT 1 FROM \"answers\" /* ) */ WHERE TRUE)"
       q = described_class.new(
-        sql: "SELECT * FROM \"questions\" WHERE EXISTS (SELECT 1 FROM \"answers\" /* ) */ WHERE TRUE)",
+        sql: sql,
         params: {}, bind_spec: [],
         intent: { 'table' => 'questions', 'type' => 'select', 'filters' => [{ 'op' => 'exists', 'related_table' => 'answers' }] },
         allow_tables: ['questions'], config: config
       )
 
-      expect(q.safe?).to be true
+      expect(q.send(:strip_exists_subqueries, sql)).to eq('SELECT * FROM "questions" WHERE TRUE')
+      expect(q.safe?).to be false # SqlLinter intentionally rejects SQL comments.
     end
 
     it 'fails closed for an unparseable top-level table reference' do
