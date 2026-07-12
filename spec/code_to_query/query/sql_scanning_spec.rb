@@ -44,6 +44,14 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       expect(scanner.extract_table_names("SELECT '`' FROM`forbidden`")).to eq(['forbidden'])
     end
 
+    it 'does not let a string quote inside a quoted identifier hide a later table reference' do
+      expect(scanner.extract_table_names(%q(SELECT 1 AS "a'b" FROM "forbidden"))).to eq(['forbidden'])
+    end
+
+    it 'masks doubled delimiters inside a quoted identifier without hiding a later table reference' do
+      expect(scanner.extract_table_names('SELECT 1 AS "a""b" FROM "forbidden"')).to eq(['forbidden'])
+    end
+
     it 'does not let identifier quotes inside dollar-quoted literals hide executable table references' do
       sql = 'SELECT $body$`$body$ FROM "allowed" JOIN"forbidden" ON TRUE'
 
