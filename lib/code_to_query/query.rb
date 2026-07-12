@@ -375,7 +375,7 @@ module CodeToQuery
     end
 
     def check_policy_scoped_related_table_references!
-      policy_scoped_related_tables = declared_related_tables_outside_explicit_allowlist
+      policy_scoped_related_tables = declared_related_tables
       return if policy_scoped_related_tables.empty?
 
       extract_table_names(strip_exists_subqueries(@sql)).each do |table|
@@ -454,15 +454,13 @@ module CodeToQuery
       end
     end
 
-    def declared_related_tables_outside_explicit_allowlist
-      explicit_tables = Array(@allow_tables).compact.map { |table| table.to_s.downcase }
-
+    def declared_related_tables
       Array(@intent['filters']).filter_map do |filter|
         op = filter['op'].to_s.downcase
         next unless %w[exists not_exists].include?(op)
 
         filter['related_table']&.to_s&.downcase
-      end.reject { |table| table.nil? || explicit_tables.include?(table) }.uniq
+      end.compact.uniq
     end
 
     def strip_exists_subqueries(sql)

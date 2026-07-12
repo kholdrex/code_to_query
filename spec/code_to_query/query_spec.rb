@@ -407,7 +407,9 @@ RSpec.describe CodeToQuery::Query do
             'filters' => [{ 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers', 'fk_column' => 'question_id' }],
             '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
           },
-          allow_tables: ['questions'], config: config
+          # Explicitly allowlisting the related table must not bypass the
+          # occurrence-level policy scope checks.
+          allow_tables: %w[questions answers], config: config
         )
 
         expect(q.safe?).to be false

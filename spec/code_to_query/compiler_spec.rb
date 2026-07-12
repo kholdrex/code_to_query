@@ -839,12 +839,22 @@ RSpec.describe CodeToQuery::Compiler do
         )
       end
 
-      it 'fails closed when an explicit predicate contract yields no predicates' do
+      it 'accepts an empty enforced_predicates contract' do
         config.policy_adapter = ->(_user, **) { { enforced_predicates: {} } }
 
-        expect { compiler.compile(intent) }.to raise_error(
-          CodeToQuery::PolicyAdapterError, /empty predicate contract/
-        )
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq('SELECT * FROM "orders" LIMIT 100')
+        expect(result[:bind_spec]).to eq([])
+      end
+
+      it 'accepts an empty predicates contract' do
+        config.policy_adapter = ->(_user, **) { { predicates: {} } }
+
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq('SELECT * FROM "orders" LIMIT 100')
+        expect(result[:bind_spec]).to eq([])
       end
 
       it 'does not swallow errors raised inside an intent-aware strict keyword adapter' do

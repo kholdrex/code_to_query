@@ -124,16 +124,10 @@ module CodeToQuery
 
       predicates = policy_info[:enforced_predicates] || policy_info['enforced_predicates'] ||
                    policy_info[:predicates] || policy_info['predicates']
-      explicit_predicate_contract = policy_info.keys.any? do |key|
-        %w[enforced_predicates predicates].include?(key.to_s)
-      end
       predicates = policy_info if predicates.nil? && direct_predicate_hash?(policy_info)
       predicates ||= {}
       unless predicates.is_a?(Hash)
         return handle_policy_failure("Policy predicates must be a Hash, got #{predicates.class}")
-      end
-      if explicit_predicate_contract && predicates.empty?
-        return handle_policy_failure('Policy adapter returned an empty predicate contract')
       end
 
       predicates.each do |column, value|
