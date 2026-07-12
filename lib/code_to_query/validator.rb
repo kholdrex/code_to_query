@@ -43,6 +43,10 @@ module CodeToQuery
 
     def validate(intent_hash, current_user: nil, allow_tables: nil)
       preprocessed = preprocess_exists_filters(intent_hash)
+      # Policy metadata is an internal, trusted channel. Never permit an
+      # intent supplied by a caller/provider to influence it.
+      preprocessed.delete('__policy_allowed_tables')
+      preprocessed.delete(:__policy_allowed_tables)
 
       if fetch_value(preprocessed, :limit).nil? && CodeToQuery.config.default_limit
         preprocessed = preprocessed.merge('limit' => CodeToQuery.config.default_limit)
@@ -145,8 +149,9 @@ module CodeToQuery
         raise CodeToQuery::PolicyAdapterError, message
       end
 
-      allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map { |t| t.to_s.downcase }
-      if allowed_tables.any?
+      policy_has_allowed_tables = policy_info.key?(:allowed_tables) || policy_info.key?('allowed_tables')
+      if policy_has_allowed_tables
+        allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map { |t| t.to_s.downcase }
         intent[:__policy_allowed_tables] = allowed_tables
         intent['__policy_allowed_tables'] = allowed_tables
 

@@ -334,18 +334,18 @@ module CodeToQuery
       normalized_explicit_tables = explicit_tables.map(&:downcase).uniq
       normalized_policy_tables = policy_tables.map(&:downcase).uniq
 
-      return @allow_tables if explicit_tables.empty? && policy_tables.empty?
+      return @allow_tables unless policy_allowlist_present?
       return normalized_policy_tables if explicit_tables.empty?
-      return normalized_explicit_tables if policy_tables.empty?
 
       normalized_explicit_tables & normalized_policy_tables
     end
 
     def allowlist_sources_present?
-      explicit_tables = Array(@allow_tables).compact
-      policy_tables = Array(@intent['__policy_allowed_tables']).compact
+      Array(@allow_tables).compact.any? || policy_allowlist_present?
+    end
 
-      explicit_tables.any? || policy_tables.any?
+    def policy_allowlist_present?
+      @intent.key?('__policy_allowed_tables')
     end
 
     def lint_sql!
@@ -405,7 +405,7 @@ module CodeToQuery
           declaration = declared_references[reference][sql_references[reference] - 1]
           if declaration
             required_bind_numbers = policy_binds_by_declaration.fetch(declaration, [])
-            next if policy_bind_present_in_subquery?(subquery, required_bind_numbers, subqueries)
+            next if policy_bind_present_in_subquery?(subquery, required_bind_numbers, subqueries, table)
 
             raise SecurityError,
                   "Table '#{table}' has an unscoped #{subquery[:operator].upcase} reference"
@@ -417,7 +417,7 @@ module CodeToQuery
       end
     end
 
-    def policy_bind_present_in_subquery?(subquery, policy_bind_numbers, subqueries)
+    def policy_bind_present_in_subquery?(subquery, policy_bind_numbers, subqueries, table)
       return true if policy_bind_numbers.empty? # This occurrence has no row predicate to enforce.
 
       nested_ranges = subqueries.filter_map do |candidate|
@@ -430,7 +430,14 @@ module CodeToQuery
         bind_number if position >= subquery[:start] && position < subquery[:finish] &&
                        nested_ranges.none? { |range| range.cover?(position) }
       end
-      (policy_bind_numbers - present_bind_numbers).empty?
+      return false unless (policy_bind_numbers - present_bind_numbers).empty?
+
+      policy_bind_numbers.all? do |number|
+        bind = Array(@bind_spec)[number - 1]
+        sql_scanner.policy_predicate_bind_numbers(
+          subquery[:sql], table, bind && bind[:column], question_bind_number: number
+        ).include?(number)
+      end
     end
 
     def policy_binds_by_related_filter

@@ -992,12 +992,24 @@ RSpec.describe CodeToQuery::Compiler do
         config.policy_adapter = ->(_user, **) { {} }
         untrusted_intent = {
           'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
-          '__policy_expected_keys' => ['policy_attacker']
+          '__policy_expected_keys' => ['policy_attacker'],
+          '__policy_allowed_tables' => ['attacker_secrets']
         }
 
         result = compiler.compile(untrusted_intent)
 
         expect(result[:intent]).not_to have_key('__policy_expected_keys')
+        expect(result[:intent]).not_to have_key('__policy_allowed_tables')
+      end
+
+      it 'preserves an explicitly empty related policy allowlist as deny all' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          kwargs[:table] == 'questions' ? { allowed_tables: ['questions'] } : { allowed_tables: [] }
+        end
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+
+        expect(result[:intent]['__policy_allowed_tables']).to eq([])
       end
 
       it 'records related-table allowlists returned by the subquery policy adapter' do

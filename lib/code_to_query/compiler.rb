@@ -35,6 +35,7 @@ module CodeToQuery
 
       table = intent['table']
       policy_info = safely_fetch_policy(table: table, current_user: current_user, intent: intent)
+      merge_policy_allowed_tables!(intent, policy_info)
       policy_hash = extract_enforced_predicates(policy_info)
       return intent if policy_hash.empty?
 
@@ -577,17 +578,28 @@ module CodeToQuery
     def merge_policy_allowed_tables!(intent, policy_info)
       return unless policy_info.is_a?(Hash)
 
-      allowed_tables = Array(policy_info[:allowed_tables] || policy_info['allowed_tables']).map do |table|
-        table.to_s.downcase
-      end.reject(&:empty?)
-      return if allowed_tables.empty?
+      present = policy_info.key?(:allowed_tables) || policy_info.key?('allowed_tables')
+      return unless present
 
-      intent['__policy_allowed_tables'] = (Array(intent['__policy_allowed_tables']) + allowed_tables).uniq
+      value = policy_info.key?(:allowed_tables) ? policy_info[:allowed_tables] : policy_info['allowed_tables']
+      allowed_tables = Array(value).map { |table| table.to_s.downcase }.reject(&:empty?)
+      if intent.key?('__policy_allowed_tables')
+        existing = Array(intent['__policy_allowed_tables'])
+        intent['__policy_allowed_tables'] = if existing.empty? || allowed_tables.empty?
+                                               []
+                                             else
+                                               (existing + allowed_tables).uniq
+                                             end
+      else
+        intent['__policy_allowed_tables'] = allowed_tables
+      end
     end
 
     def strip_untrusted_policy_expectations!(intent)
       intent.delete('__policy_expected_keys')
       intent.delete(:__policy_expected_keys)
+      intent.delete('__policy_allowed_tables')
+      intent.delete(:__policy_allowed_tables)
     end
 
     # Independent compiler backstop: metadata alone never proves that a policy

@@ -31,6 +31,25 @@ RSpec.describe CodeToQuery::Validator do
       end
     end
 
+    context 'with policy table restrictions' do
+      let(:intent) do
+        { 'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+          '__policy_allowed_tables' => ['users'] }
+      end
+
+      it 'strips caller-supplied policy allowlist metadata before consulting policy' do
+        CodeToQuery.config.policy_adapter = ->(_user, **) { { allowed_tables: ['orders'] } }
+
+        expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted by policy/)
+      end
+
+      it 'treats an explicitly empty policy allowlist as deny all' do
+        CodeToQuery.config.policy_adapter = ->(_user, **) { { allowed_tables: [] } }
+
+        expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted by policy/)
+      end
+    end
+
     context 'with missing required fields' do
       it 'raises ArgumentError when type is missing' do
         intent = { 'table' => 'users', 'columns' => ['*'] }

@@ -7,7 +7,7 @@ module CodeToQuery
     class SqlScanner
       def strip_exists_subqueries(sql)
         source = sql.to_s
-        searchable = mask_sql_literals_and_comments(source)
+        searchable = mask_sql_literals_comments_and_identifier_contents(source)
         stripped = +''
         index = 0
 
@@ -26,7 +26,7 @@ module CodeToQuery
 
       def exists_subqueries(sql, source_offset: 0)
         source = sql.to_s
-        searchable = mask_sql_literals_and_comments(source)
+        searchable = mask_sql_literals_comments_and_identifier_contents(source)
         subqueries = []
         index = 0
 
@@ -58,6 +58,35 @@ module CodeToQuery
             [Regexp.last_match.begin(0), ordinal]
           end
         end
+      end
+
+      # Identify binds used as values of the expected qualified policy column.
+      # A placeholder elsewhere in the EXISTS body does not enforce policy.
+      def policy_predicate_bind_numbers(sql, table, column, question_bind_number: nil)
+        return [] if table.to_s.empty? || column.to_s.empty?
+
+        searchable = mask_sql_literals_and_comments(sql.to_s)
+        where_match = /\bWHERE\b/i.match(searchable)
+        return [] unless where_match
+
+        searchable = searchable[where_match.end(0)..]
+        # Compiler-emitted policy predicates are conjunctive. Refuse OR here:
+        # `policy_column = $1 OR TRUE` does not enforce the policy.
+        return [] if searchable.match?(/\bOR\b/i)
+
+        identifier = lambda do |value|
+          escaped = Regexp.escape(value.to_s)
+          "(?:\"#{escaped}\"|`#{escaped}`|#{escaped})"
+        end
+        qualified = "#{identifier.call(table)}\\s*\\.\\s*#{identifier.call(column)}"
+        if question_bind_number && searchable.match?(/#{qualified}\s*(?:=\s*\?|BETWEEN\s*\?\s+AND\s*\?)/i)
+          return [question_bind_number]
+        end
+
+        pattern = /#{qualified}\s*(?:=\s*\$(\d+)|BETWEEN\s*\$(\d+)\s+AND\s*\$(\d+))/i
+        searchable.to_enum(:scan, pattern).flat_map do
+          Regexp.last_match.captures.compact.map(&:to_i)
+        end.uniq
       end
 
       private

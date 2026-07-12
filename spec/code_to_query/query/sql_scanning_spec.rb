@@ -36,6 +36,24 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
 
       expect(scanner.exists_subqueries(sql).first[:sql]).to eq('SELECT $$)$$ FROM "answers"')
     end
+
+    it 'does not let EXISTS text in a quoted identifier swallow a real subquery' do
+      sql = 'SELECT 1 AS "x EXISTS (" WHERE EXISTS (SELECT 1 FROM "answers")'
+
+      expect(scanner.exists_subqueries(sql).map { |entry| entry[:sql] })
+        .to eq(['SELECT 1 FROM "answers"'])
+      expect(scanner.strip_exists_subqueries(sql)).to eq('SELECT 1 AS "x EXISTS (" WHERE TRUE')
+    end
+  end
+
+  describe '#policy_predicate_bind_numbers' do
+    it 'accepts binds only in the expected qualified predicate' do
+      expect(scanner.policy_predicate_bind_numbers('SELECT $1 FROM "answers" WHERE TRUE', 'answers', 'tenant_id')).to eq([])
+      expect(scanner.policy_predicate_bind_numbers('SELECT "answers"."tenant_id" = $1 FROM "answers" WHERE TRUE', 'answers', 'tenant_id')).to eq([])
+      expect(scanner.policy_predicate_bind_numbers('SELECT 1 FROM "answers" WHERE $1 = $1', 'answers', 'tenant_id')).to eq([])
+      expect(scanner.policy_predicate_bind_numbers('SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1 OR TRUE', 'answers', 'tenant_id')).to eq([])
+      expect(scanner.policy_predicate_bind_numbers('SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1', 'answers', 'tenant_id')).to eq([1])
+    end
   end
 
   describe '#extract_table_names' do
