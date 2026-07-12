@@ -385,12 +385,13 @@ module CodeToQuery
               "Table '#{table}' is only allowed inside declared EXISTS/NOT EXISTS filters"
       end
 
-      declared_references = Hash.new(0)
+      declared_references = Hash.new { |hash, key| hash[key] = [] }
       Array(@intent['filters']).each do |filter|
         operator = filter['op'].to_s.downcase
         table = filter['related_table']&.to_s&.downcase
-        declared_references[[operator, table]] += 1 if %w[exists not_exists].include?(operator) && table
+        declared_references[[operator, table]] << filter if %w[exists not_exists].include?(operator) && table
       end
+      policy_binds_by_declaration = policy_binds_by_related_filter
 
       sql_references = Hash.new(0)
       subqueries = sql_scanner.exists_subqueries(@sql)
@@ -401,8 +402,10 @@ module CodeToQuery
 
           reference = [subquery[:operator], normalized_table]
           sql_references[reference] += 1
-          if sql_references[reference] <= declared_references[reference]
-            next if policy_bind_present_in_subquery?(subquery, normalized_table, subqueries)
+          declaration = declared_references[reference][sql_references[reference] - 1]
+          if declaration
+            required_bind_numbers = policy_binds_by_declaration.fetch(declaration.object_id, [])
+            next if policy_bind_present_in_subquery?(subquery, required_bind_numbers, subqueries)
 
             raise SecurityError,
                   "Table '#{table}' has an unscoped #{subquery[:operator].upcase} reference"
@@ -414,13 +417,8 @@ module CodeToQuery
       end
     end
 
-    def policy_bind_present_in_subquery?(subquery, table, subqueries)
-      table_fragment = table.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
-      policy_bind_numbers = Array(@bind_spec).each_with_index.filter_map do |bind, index|
-        key = bind[:key]&.to_s
-        index + 1 if key&.match?(/\Apolicy_subquery_\d+_#{Regexp.escape(table_fragment)}_/)
-      end
-      return true if policy_bind_numbers.empty? # This table has no row predicate to enforce.
+    def policy_bind_present_in_subquery?(subquery, policy_bind_numbers, subqueries)
+      return true if policy_bind_numbers.empty? # This occurrence has no row predicate to enforce.
 
       nested_ranges = subqueries.filter_map do |candidate|
         next if candidate.equal?(subquery)
@@ -428,9 +426,31 @@ module CodeToQuery
 
         candidate[:start]...candidate[:finish]
       end
-      sql_scanner.bind_placeholder_positions(@sql).any? do |position, bind_number|
-        position >= subquery[:start] && position < subquery[:finish] &&
-          nested_ranges.none? { |range| range.cover?(position) } && policy_bind_numbers.include?(bind_number)
+      present_bind_numbers = sql_scanner.bind_placeholder_positions(@sql).filter_map do |position, bind_number|
+        bind_number if position >= subquery[:start] && position < subquery[:finish] &&
+                       nested_ranges.none? { |range| range.cover?(position) }
+      end
+      (policy_bind_numbers - present_bind_numbers).empty?
+    end
+
+    def policy_binds_by_related_filter
+      declarations_by_table = Array(@intent['filters']).select do |filter|
+        %w[exists not_exists].include?(filter['op'].to_s.downcase) && filter['related_table']
+      end.group_by { |filter| filter['related_table'].to_s.downcase }
+
+      declarations_by_table.each_with_object({}) do |(table, declarations), result|
+        table_fragment = table.gsub(/[^a-zA-Z0-9_]/, '_')
+        bind_numbers = Array(@bind_spec).each_with_index.filter_map do |bind, index|
+          key = bind[:key]&.to_s
+          index + 1 if key&.match?(/\Apolicy_subquery_\d+_#{Regexp.escape(table_fragment)}_/)
+        end
+        quotient, remainder = bind_numbers.length.divmod(declarations.length)
+        offset = 0
+        declarations.each_with_index do |declaration, index|
+          count = quotient + (index < remainder ? 1 : 0)
+          result[declaration.object_id] = bind_numbers.slice(offset, count)
+          offset += count
+        end
       end
     end
 
