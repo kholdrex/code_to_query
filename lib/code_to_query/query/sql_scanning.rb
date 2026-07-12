@@ -69,27 +69,66 @@ module CodeToQuery
         where_match = /\bWHERE\b/i.match(searchable)
         return [] unless where_match
 
-        searchable = searchable[where_match.end(0)..]
-        # Compiler-emitted policy predicates are conjunctive. Refuse OR here:
-        # `policy_column = $1 OR TRUE` does not enforce the policy.
-        return [] if searchable.match?(/\bOR\b/i)
+        conjuncts = top_level_conjuncts(searchable[where_match.end(0)..])
+        return [] unless conjuncts
 
         identifier = lambda do |value|
           escaped = Regexp.escape(value.to_s)
-          "(?:\"#{escaped}\"|`#{escaped}`|#{escaped})"
+          unquoted = "(?<![A-Za-z0-9_$])#{escaped}(?![A-Za-z0-9_$])"
+          "(?:\"#{escaped}\"|`#{escaped}`|#{unquoted})"
         end
         qualified = "#{identifier.call(table)}\\s*\\.\\s*#{identifier.call(column)}"
-        if question_bind_number && searchable.match?(/#{qualified}\s*(?:=\s*\?|BETWEEN\s*\?\s+AND\s*\?)/i)
+        wrappers = ->(predicate) { /\A\s*\(*\s*#{predicate}\s*\)*\s*\z/i }
+        question_pattern = wrappers.call("#{qualified}\\s*(?:=\\s*\\?|BETWEEN\\s*\\?\\s+AND\\s*\\?)")
+        if question_bind_number && conjuncts.any? { |conjunct| conjunct.match?(question_pattern) }
           return [question_bind_number]
         end
 
-        pattern = /#{qualified}\s*(?:=\s*\$(\d+)|BETWEEN\s*\$(\d+)\s+AND\s*\$(\d+))/i
-        searchable.to_enum(:scan, pattern).flat_map do
-          Regexp.last_match.captures.compact.map(&:to_i)
+        pattern = wrappers.call("#{qualified}\\s*(?:=\\s*\\$(\\d+)|BETWEEN\\s*\\$(\\d+)\\s+AND\\s*\\$(\\d+))")
+        conjuncts.flat_map do |conjunct|
+          match = pattern.match(conjunct)
+          match ? match.captures.compact.map(&:to_i) : []
         end.uniq
       end
 
       private
+
+      # Return mandatory top-level WHERE conjuncts. Nested expressions stay
+      # intact, so policy text under NOT, CASE, or a subquery cannot count.
+      def top_level_conjuncts(searchable)
+        conjuncts = []
+        start = 0
+        depth = 0
+        between = false
+
+        searchable.to_enum(:scan, /\b(?:AND|OR|BETWEEN)\b|[()]/i).each do
+          token = Regexp.last_match(0).upcase
+          case token
+          when '('
+            depth += 1
+          when ')'
+            return nil if depth.zero?
+
+            depth -= 1
+          when 'OR'
+            return nil if depth.zero?
+          when 'BETWEEN'
+            between = true if depth.zero?
+          when 'AND'
+            next unless depth.zero?
+            if between
+              between = false
+            else
+              conjuncts << searchable[start...Regexp.last_match.begin(0)]
+              start = Regexp.last_match.end(0)
+            end
+          end
+        end
+        return nil unless depth.zero?
+
+        conjuncts << searchable[start..]
+        conjuncts
+      end
 
       def skip_parenthesized_sql(source, index)
         depth = 1

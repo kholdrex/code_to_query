@@ -54,6 +54,39 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       expect(scanner.policy_predicate_bind_numbers('SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1 OR TRUE', 'answers', 'tenant_id')).to eq([])
       expect(scanner.policy_predicate_bind_numbers('SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1', 'answers', 'tenant_id')).to eq([1])
     end
+
+    it 'rejects predicates in non-enforcing boolean and expression contexts' do
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM "answers" WHERE NOT ("answers"."tenant_id" = $1)', 'answers', 'tenant_id'
+             )).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM "answers" WHERE CASE WHEN "answers"."tenant_id" = $1 THEN TRUE ELSE TRUE END',
+               'answers', 'tenant_id'
+             )).to eq([])
+    end
+
+    it 'requires identifier boundaries for unquoted policy columns' do
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM answers WHERE notanswers.tenant_id = $1', 'answers', 'tenant_id'
+             )).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM answers WHERE answers.tenant_id_suffix = $1', 'answers', 'tenant_id'
+             )).to eq([])
+    end
+
+    it 'does not count a predicate placed in a nested scope' do
+      sql = 'SELECT 1 FROM "answers" WHERE EXISTS ' \
+            '(SELECT 1 FROM "decoys" WHERE "answers"."tenant_id" = $1)'
+
+      expect(scanner.policy_predicate_bind_numbers(sql, 'answers', 'tenant_id')).to eq([])
+    end
+
+    it 'accepts compiler-shaped top-level conjuncts including BETWEEN' do
+      sql = 'SELECT 1 FROM answers WHERE answers.question_id = questions.id ' \
+            'AND answers.created_at BETWEEN $2 AND $3'
+
+      expect(scanner.policy_predicate_bind_numbers(sql, 'answers', 'created_at')).to eq([2, 3])
+    end
   end
 
   describe '#extract_table_names' do
