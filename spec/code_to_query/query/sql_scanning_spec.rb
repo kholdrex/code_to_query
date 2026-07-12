@@ -28,6 +28,12 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       expect { scanner.bind_placeholder_positions('SELECT $tag$spoof $1') }
         .to raise_error(SecurityError, 'Unterminated SQL literal or comment')
     end
+
+    it 'ignores question marks in quoted SQLite and MySQL identifiers' do
+      sql = 'SELECT "sqlite?name", `mysql?name`, ?'
+
+      expect(scanner.bind_placeholder_positions(sql)).to eq([[sql.rindex('?'), 1]])
+    end
   end
 
   describe '#exists_subqueries' do
@@ -47,6 +53,34 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
   end
 
   describe '#policy_predicate_bind_numbers' do
+    it 'derives SQLite and MySQL question-mark bind identity from the global SQL position' do
+      full_sql = 'SELECT ? FROM questions WHERE EXISTS ' \
+                 '(SELECT ? FROM answers WHERE answers.kind = ? AND answers.tenant_id = ?)'
+      body_start = full_sql.index('SELECT ?', full_sql.index('EXISTS'))
+      body = full_sql[body_start...full_sql.rindex(')')]
+
+      expect(scanner.policy_predicate_bind_numbers(
+               body, 'answers', 'tenant_id',
+               question_bind_number: 3, source_sql: full_sql, source_offset: body_start
+             )).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               body, 'answers', 'tenant_id',
+               question_bind_number: 4, source_sql: full_sql, source_offset: body_start
+             )).to eq([4])
+    end
+
+    it 'ignores question marks in literals, comments, and dollar quotes when deriving identity' do
+      full_sql = "SELECT '?', $$?$$, ? /* ? */ WHERE EXISTS " \
+                 '(SELECT 1 FROM answers WHERE answers.tenant_id = ?)'
+      body_start = full_sql.index('SELECT 1')
+      body = full_sql[body_start...full_sql.rindex(')')]
+
+      expect(scanner.policy_predicate_bind_numbers(
+               body, 'answers', 'tenant_id',
+               question_bind_number: 2, source_sql: full_sql, source_offset: body_start
+             )).to eq([2])
+    end
+
     it 'accepts binds only in the expected qualified predicate' do
       expect(scanner.policy_predicate_bind_numbers('SELECT $1 FROM "answers" WHERE TRUE', 'answers', 'tenant_id')).to eq([])
       expect(scanner.policy_predicate_bind_numbers('SELECT "answers"."tenant_id" = $1 FROM "answers" WHERE TRUE', 'answers', 'tenant_id')).to eq([])

@@ -435,7 +435,8 @@ module CodeToQuery
       policy_bind_numbers.all? do |number|
         bind = Array(@bind_spec)[number - 1]
         sql_scanner.policy_predicate_bind_numbers(
-          subquery[:sql], table, bind && bind[:column], question_bind_number: number
+          subquery[:sql], table, bind && bind[:column],
+          question_bind_number: number, source_sql: @sql, source_offset: subquery[:start]
         ).include?(number)
       end
     end

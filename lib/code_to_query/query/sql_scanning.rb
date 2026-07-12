@@ -46,7 +46,7 @@ module CodeToQuery
       end
 
       def bind_placeholder_positions(sql)
-        searchable = mask_sql_literals_and_comments(sql.to_s)
+        searchable = mask_sql_literals_comments_and_identifier_contents(sql.to_s)
         if searchable.match?(/\$\d+/)
           searchable.to_enum(:scan, /\$(\d+)/).map do
             [Regexp.last_match.begin(0), Regexp.last_match(1).to_i]
@@ -62,14 +62,16 @@ module CodeToQuery
 
       # Identify binds used as values of the expected qualified policy column.
       # A placeholder elsewhere in the EXISTS body does not enforce policy.
-      def policy_predicate_bind_numbers(sql, table, column, question_bind_number: nil)
+      def policy_predicate_bind_numbers(sql, table, column, question_bind_number: nil,
+                                        source_sql: sql, source_offset: 0)
         return [] if table.to_s.empty? || column.to_s.empty?
 
         searchable = mask_sql_literals_and_comments(sql.to_s)
         where_match = /\bWHERE\b/i.match(searchable)
         return [] unless where_match
 
-        conjuncts = top_level_conjuncts(searchable[where_match.end(0)..])
+        where_body = searchable[where_match.end(0)..]
+        conjuncts = top_level_conjuncts(where_body)
         return [] unless conjuncts
 
         identifier = lambda do |value|
@@ -84,8 +86,25 @@ module CodeToQuery
         qualified = "#{identifier.call(table)}\\s*\\.\\s*#{identifier.call(column)}"
         wrappers = ->(predicate) { /\A\s*\(*\s*#{predicate}\s*\)*\s*\z/i }
         question_pattern = wrappers.call("#{qualified}\\s*(?:=\\s*\\?|BETWEEN\\s*\\?\\s+AND\\s*\\?)")
-        if question_bind_number && conjuncts.any? { |conjunct| conjunct.match?(question_pattern) }
-          return [question_bind_number]
+        placeholder_positions = bind_placeholder_positions(source_sql)
+        first_placeholder = placeholder_positions.first
+        question_placeholders = first_placeholder && source_sql.to_s[first_placeholder.first] == '?'
+        if question_bind_number && question_placeholders
+          placeholder_ordinals = placeholder_positions.to_h
+          search_from = 0
+          conjuncts.each do |conjunct|
+            conjunct_offset = where_body.index(conjunct, search_from)
+            search_from = conjunct_offset + conjunct.length
+            next unless (match = question_pattern.match(conjunct))
+
+            match[0].to_enum(:scan, /\?/).each do
+              predicate_offset = where_match.end(0) + conjunct_offset + match.begin(0)
+              local_position = predicate_offset + Regexp.last_match.begin(0)
+              ordinal = placeholder_ordinals[source_offset + local_position]
+              return [ordinal] if ordinal == question_bind_number
+            end
+          end
+          return []
         end
 
         pattern = wrappers.call("#{qualified}\\s*(?:=\\s*\\$(\\d+)|BETWEEN\\s*\\$(\\d+)\\s+AND\\s*\\$(\\d+))")
