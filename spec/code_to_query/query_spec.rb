@@ -397,7 +397,7 @@ RSpec.describe CodeToQuery::Query do
     it 'rejects additional unscoped OR EXISTS and NOT EXISTS references to a policy-scoped table' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
 
-      %w[EXISTS NOT\ EXISTS].each do |operator|
+      ['EXISTS', 'NOT EXISTS'].each do |operator|
         q = described_class.new(
           sql: %(SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1) OR #{operator} (SELECT 1 FROM "answers")),
           params: { 'policy_subquery_1_answers_tenant_id' => 42 },

@@ -404,7 +404,7 @@ module CodeToQuery
           sql_references[reference] += 1
           declaration = declared_references[reference][sql_references[reference] - 1]
           if declaration
-            required_bind_numbers = policy_binds_by_declaration.fetch(declaration.object_id, [])
+            required_bind_numbers = policy_binds_by_declaration.fetch(declaration, [])
             next if policy_bind_present_in_subquery?(subquery, required_bind_numbers, subqueries)
 
             raise SecurityError,
@@ -438,7 +438,7 @@ module CodeToQuery
         %w[exists not_exists].include?(filter['op'].to_s.downcase) && filter['related_table']
       end.group_by { |filter| filter['related_table'].to_s.downcase }
 
-      declarations_by_table.each_with_object({}) do |(table, declarations), result|
+      declarations_by_table.each_with_object({}.compare_by_identity) do |(table, declarations), result|
         table_fragment = table.gsub(/[^a-zA-Z0-9_]/, '_')
         bind_numbers = Array(@bind_spec).each_with_index.filter_map do |bind, index|
           key = bind[:key]&.to_s
@@ -448,7 +448,7 @@ module CodeToQuery
         offset = 0
         declarations.each_with_index do |declaration, index|
           count = quotient + (index < remainder ? 1 : 0)
-          result[declaration.object_id] = bind_numbers.slice(offset, count)
+          result[declaration] = bind_numbers.slice(offset, count)
           offset += count
         end
       end
