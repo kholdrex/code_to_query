@@ -74,7 +74,11 @@ module CodeToQuery
 
         identifier = lambda do |value|
           escaped = Regexp.escape(value.to_s)
-          unquoted = "(?<![A-Za-z0-9_$])#{escaped}(?![A-Za-z0-9_$])"
+          # SQL engines commonly accept Unicode letters in unquoted identifiers.
+          # Treat Unicode letters, marks, numbers, and connector punctuation as
+          # identifier characters so a trusted name cannot match a suffix or
+          # prefix of an attacker-controlled identifier.
+          unquoted = "(?<![\\p{L}\\p{M}\\p{N}\\p{Pc}$])#{escaped}(?![\\p{L}\\p{M}\\p{N}\\p{Pc}$])"
           "(?:\"#{escaped}\"|`#{escaped}`|#{unquoted})"
         end
         qualified = "#{identifier.call(table)}\\s*\\.\\s*#{identifier.call(column)}"

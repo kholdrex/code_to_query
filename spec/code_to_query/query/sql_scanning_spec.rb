@@ -74,6 +74,21 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
              )).to eq([])
     end
 
+    it 'requires Unicode identifier boundaries for unquoted policy identifiers' do
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM answers WHERE éanswers.tenant_id = $1', 'answers', 'tenant_id'
+             )).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM answers WHERE answersé.tenant_id = $1', 'answers', 'tenant_id'
+             )).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM answers WHERE answers.étenant_id = $1', 'answers', 'tenant_id'
+             )).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM answers WHERE answers.tenant_idé = $1', 'answers', 'tenant_id'
+             )).to eq([])
+    end
+
     it 'does not count a predicate placed in a nested scope' do
       sql = 'SELECT 1 FROM "answers" WHERE EXISTS ' \
             '(SELECT 1 FROM "decoys" WHERE "answers"."tenant_id" = $1)'

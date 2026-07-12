@@ -1002,6 +1002,20 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:intent]).not_to have_key('__policy_allowed_tables')
       end
 
+      it 'replaces caller-supplied allowlist metadata with the enforced policy allowlist' do
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          { allowed_tables: ['questions'], enforced_predicates: { tenant_id: 42 } }
+        end
+        untrusted_intent = {
+          'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
+          '__policy_allowed_tables' => ['attacker']
+        }
+
+        result = compiler.compile(untrusted_intent)
+
+        expect(result[:intent]['__policy_allowed_tables']).to eq(['questions'])
+      end
+
       it 'preserves an explicitly empty related policy allowlist as deny all' do
         config.policy_adapter = lambda do |_user, **kwargs|
           kwargs[:table] == 'questions' ? { allowed_tables: ['questions'] } : { allowed_tables: [] }
