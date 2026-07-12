@@ -37,4 +37,18 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       expect(scanner.exists_subqueries(sql).first[:sql]).to eq('SELECT $$)$$ FROM "answers"')
     end
   end
+
+  describe '#extract_table_names' do
+    it 'extracts quoted FROM and JOIN identifiers without intervening whitespace' do
+      sql = 'SELECT * FROM"questions" JOIN"answers" ON "answers"."question_id" = "questions"."id"'
+
+      expect(scanner.extract_table_names(sql)).to eq(%w[questions answers])
+    end
+
+    it 'does not treat keyword text inside quoted identifiers as SQL structure' do
+      sql = 'SELECT * FROM "questions" AS "JOIN decoy" JOIN"answers WHERE decoy" ON TRUE'
+
+      expect(scanner.extract_table_names(sql)).to eq(['questions', 'answers WHERE decoy'])
+    end
+  end
 end

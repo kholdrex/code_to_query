@@ -216,10 +216,17 @@ module CodeToQuery
       public
 
       def extract_table_names(sql)
+        source = sql.to_s
+        searchable = mask_sql_literals_comments_and_identifier_contents(source)
         tables = []
 
-        sql.scan(/\bFROM\s+(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im) do |match|
-          match.first.split(',').each do |reference|
+        searchable.to_enum(:scan, /\bFROM\b\s*(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im).each do
+          match = Regexp.last_match
+          clause = source[match.begin(1)...match.end(1)]
+          masked_clause = searchable[match.begin(1)...match.end(1)]
+          commas = masked_clause.to_enum(:scan, /,/).map { Regexp.last_match.begin(0) }
+          [-1, *commas, clause.length].each_cons(2) do |left, right|
+            reference = clause[(left + 1)...right]
             table_name = extract_table_reference_name(reference)
             raise SecurityError, "Unsupported FROM reference: #{reference.to_s.strip}" unless table_name
 
@@ -227,9 +234,11 @@ module CodeToQuery
           end
         end
 
-        sql.scan(/#{join_clause_pattern}\s+(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im) do |match|
-          table_name = extract_table_reference_name(match.first)
-          raise SecurityError, "Unsupported JOIN reference: #{match.first.to_s.strip}" unless table_name
+        searchable.to_enum(:scan, /#{join_clause_pattern}\s*(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im).each do
+          match = Regexp.last_match
+          reference = source[match.begin(1)...match.end(1)]
+          table_name = extract_table_reference_name(reference)
+          raise SecurityError, "Unsupported JOIN reference: #{reference.to_s.strip}" unless table_name
 
           tables << table_name
         end
@@ -238,6 +247,29 @@ module CodeToQuery
       end
 
       private
+
+      def mask_sql_literals_comments_and_identifier_contents(source)
+        masked = mask_sql_literals_and_comments(source)
+        quote = nil
+        index = 0
+        while index < source.length
+          char = source[index]
+          if quote
+            if char == quote && source[index + 1] == quote
+              masked[index] = masked[index + 1] = ' '
+              index += 1
+            elsif char == quote
+              quote = nil
+            else
+              masked[index] = ' '
+            end
+          elsif ['"', '`'].include?(char)
+            quote = char
+          end
+          index += 1
+        end
+        masked
+      end
 
       def join_clause_pattern
         /\b(?:INNER\s+|(?:LEFT|RIGHT|FULL)(?:\s+OUTER)?\s+|CROSS\s+|NATURAL\s+(?:(?:LEFT|RIGHT|FULL)(?:\s+OUTER)?\s+)?)?JOIN\b/i
