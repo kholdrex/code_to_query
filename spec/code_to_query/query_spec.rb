@@ -416,6 +416,28 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'rejects two declared same-table EXISTS occurrences when only one is policy scoped' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1 AND "answers"."account_id" = $2) OR EXISTS (SELECT 1 FROM "answers")',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42, 'policy_subquery_2_answers_account_id' => 7 },
+        bind_spec: [
+          { key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil },
+          { key: 'policy_subquery_2_answers_account_id', column: 'account_id', cast: nil }
+        ],
+        intent: {
+          'table' => 'questions', 'type' => 'select',
+          'filters' => Array.new(2) { { 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers', 'fk_column' => 'question_id' } },
+          '__policy_expected_keys' => %w[policy_subquery_1_answers_tenant_id policy_subquery_2_answers_account_id]
+        },
+        allow_tables: ['questions'], config: config
+      )
+
+      expect(q.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
     it 'returns false when expected subquery policy keys are present only in params' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
 

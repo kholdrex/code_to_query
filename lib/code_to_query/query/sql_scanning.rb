@@ -24,7 +24,7 @@ module CodeToQuery
         stripped
       end
 
-      def exists_subqueries(sql)
+      def exists_subqueries(sql, source_offset: 0)
         source = sql.to_s
         searchable = mask_sql_literals_and_comments(source)
         subqueries = []
@@ -32,13 +32,32 @@ module CodeToQuery
 
         while (match = /\b(NOT\s+)?EXISTS\s*\(/i.match(searchable, index))
           boundary = skip_parenthesized_sql(source, match.end(0))
-          body = source[match.end(0)...(boundary - 1)]
-          subqueries << { operator: match[1] ? 'not_exists' : 'exists', sql: body }
-          subqueries.concat(exists_subqueries(body))
+          body_start = match.end(0)
+          body = source[body_start...(boundary - 1)]
+          subqueries << {
+            operator: match[1] ? 'not_exists' : 'exists', sql: body,
+            start: source_offset + body_start, finish: source_offset + boundary - 1
+          }
+          subqueries.concat(exists_subqueries(body, source_offset: source_offset + body_start))
           index = boundary
         end
 
         subqueries
+      end
+
+      def bind_placeholder_positions(sql)
+        searchable = mask_sql_literals_and_comments(sql.to_s)
+        if searchable.match?(/\$\d+/)
+          searchable.to_enum(:scan, /\$(\d+)/).map do
+            [Regexp.last_match.begin(0), Regexp.last_match(1).to_i]
+          end
+        else
+          ordinal = 0
+          searchable.to_enum(:scan, /\?/).map do
+            ordinal += 1
+            [Regexp.last_match.begin(0), ordinal]
+          end
+        end
       end
 
       private

@@ -393,18 +393,44 @@ module CodeToQuery
       end
 
       sql_references = Hash.new(0)
-      sql_scanner.exists_subqueries(@sql).each do |subquery|
+      subqueries = sql_scanner.exists_subqueries(@sql)
+      subqueries.each do |subquery|
         extract_table_names(strip_exists_subqueries(subquery[:sql])).each do |table|
           normalized_table = table.to_s.downcase
           next unless policy_scoped_related_tables.include?(normalized_table)
 
           reference = [subquery[:operator], normalized_table]
           sql_references[reference] += 1
-          next if sql_references[reference] <= declared_references[reference]
+          if sql_references[reference] <= declared_references[reference]
+            next if policy_bind_present_in_subquery?(subquery, normalized_table, subqueries)
+
+            raise SecurityError,
+                  "Table '#{table}' has an unscoped #{subquery[:operator].upcase} reference"
+          end
 
           raise SecurityError,
                 "Table '#{table}' has an undeclared #{subquery[:operator].upcase} reference"
         end
+      end
+    end
+
+    def policy_bind_present_in_subquery?(subquery, table, subqueries)
+      table_fragment = table.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
+      policy_bind_numbers = Array(@bind_spec).each_with_index.filter_map do |bind, index|
+        key = bind[:key]&.to_s
+        index + 1 if key&.match?(/\Apolicy_subquery_\d+_#{Regexp.escape(table_fragment)}_/)
+      end
+      return true if policy_bind_numbers.empty? # This table has no row predicate to enforce.
+
+      nested_ranges = subqueries.filter_map do |candidate|
+        next if candidate.equal?(subquery)
+        next unless candidate[:start] >= subquery[:start] && candidate[:finish] <= subquery[:finish]
+
+        candidate[:start]...candidate[:finish]
+      end
+      sql_scanner.bind_placeholder_positions(@sql).any? do |position, bind_number|
+        position >= subquery[:start] && position < subquery[:finish] &&
+          nested_ranges.none? { |range| range.cover?(position) } && policy_bind_numbers.include?(bind_number)
       end
     end
 
