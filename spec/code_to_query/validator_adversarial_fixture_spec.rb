@@ -25,10 +25,10 @@ RSpec.describe CodeToQuery::Validator do
       it 'rejects the intent with the expected reason' do
         policy = test_case['policy']
         policy_adapter = policy && lambda do |_user, **_context|
-          {
-            allowed_tables: policy.fetch('allowed_tables', []),
-            allowed_columns: policy.fetch('allowed_columns', {})
-          }
+          {}.tap do |policy_info|
+            policy_info[:allowed_tables] = policy['allowed_tables'] if policy.key?('allowed_tables')
+            policy_info[:allowed_columns] = policy['allowed_columns'] if policy.key?('allowed_columns')
+          end
         end
 
         stub_config(policy_adapter: policy_adapter, policy_adapter_fail_open: false)

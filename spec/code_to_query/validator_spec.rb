@@ -48,6 +48,16 @@ RSpec.describe CodeToQuery::Validator do
 
         expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted by policy/)
       end
+
+      it 'leaves tables unrestricted when the policy table allowlist is absent' do
+        CodeToQuery.config.policy_adapter = ->(_user, **) { { allowed_columns: {} } }
+
+        result = validator.validate(intent)
+
+        expect(result[:table]).to eq('users')
+        expect(result).not_to have_key(:__policy_allowed_tables)
+        expect(result).not_to have_key('__policy_allowed_tables')
+      end
     end
 
     context 'with missing required fields' do
