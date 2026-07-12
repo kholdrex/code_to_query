@@ -394,6 +394,28 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'rejects additional unscoped OR EXISTS and NOT EXISTS references to a policy-scoped table' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
+
+      %w[EXISTS NOT\ EXISTS].each do |operator|
+        q = described_class.new(
+          sql: %(SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."tenant_id" = $1) OR #{operator} (SELECT 1 FROM "answers")),
+          params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+          bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+          intent: {
+            'table' => 'questions', 'type' => 'select',
+            'filters' => [{ 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers', 'fk_column' => 'question_id' }],
+            '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+          },
+          allow_tables: ['questions'], config: config
+        )
+
+        expect(q.safe?).to be false
+      end
+    ensure
+      config.policy_adapter = nil
+    end
+
     it 'returns false when expected subquery policy keys are present only in params' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
 

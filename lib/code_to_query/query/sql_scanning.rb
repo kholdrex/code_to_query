@@ -24,6 +24,23 @@ module CodeToQuery
         stripped
       end
 
+      def exists_subqueries(sql)
+        source = sql.to_s
+        searchable = mask_sql_literals_and_comments(source)
+        subqueries = []
+        index = 0
+
+        while (match = /\b(NOT\s+)?EXISTS\s*\(/i.match(searchable, index))
+          boundary = skip_parenthesized_sql(source, match.end(0))
+          body = source[match.end(0)...(boundary - 1)]
+          subqueries << { operator: match[1] ? 'not_exists' : 'exists', sql: body }
+          subqueries.concat(exists_subqueries(body))
+          index = boundary
+        end
+
+        subqueries
+      end
+
       private
 
       def skip_parenthesized_sql(source, index)

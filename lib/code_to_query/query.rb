@@ -384,6 +384,28 @@ module CodeToQuery
         raise SecurityError,
               "Table '#{table}' is only allowed inside declared EXISTS/NOT EXISTS filters"
       end
+
+      declared_references = Hash.new(0)
+      Array(@intent['filters']).each do |filter|
+        operator = filter['op'].to_s.downcase
+        table = filter['related_table']&.to_s&.downcase
+        declared_references[[operator, table]] += 1 if %w[exists not_exists].include?(operator) && table
+      end
+
+      sql_references = Hash.new(0)
+      sql_scanner.exists_subqueries(@sql).each do |subquery|
+        extract_table_names(strip_exists_subqueries(subquery[:sql])).each do |table|
+          normalized_table = table.to_s.downcase
+          next unless policy_scoped_related_tables.include?(normalized_table)
+
+          reference = [subquery[:operator], normalized_table]
+          sql_references[reference] += 1
+          next if sql_references[reference] <= declared_references[reference]
+
+          raise SecurityError,
+                "Table '#{table}' has an undeclared #{subquery[:operator].upcase} reference"
+        end
+      end
     end
 
     def declared_related_tables_outside_explicit_allowlist
