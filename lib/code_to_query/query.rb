@@ -8,8 +8,9 @@ end
 require_relative 'query/sql_scanning'
 
 module CodeToQuery
+  # rubocop:disable Metrics/ClassLength
   class Query
-    def initialize(sql:, params:, bind_spec:, intent:, allow_tables:, config:)
+    def initialize(sql:, params:, bind_spec:, intent:, allow_tables:, config:, policy_contract: nil)
       copied_intent = deep_copy(intent || {})
       copied_params = deep_copy(params || {})
 
@@ -19,6 +20,7 @@ module CodeToQuery
       @intent = deep_freeze(copied_intent)
       @allow_tables = deep_freeze(deep_copy(allow_tables))
       @config = config
+      @policy_contract = policy_contract
       @safety_checked = false
       @safety_result = nil
       @metrics = deep_freeze(extract_metrics_from_intent(@intent))
@@ -349,7 +351,7 @@ module CodeToQuery
       return true unless @config.policy_adapter
 
       expected_keys = expected_policy_keys
-      return true if expected_keys.empty?
+      return compiler_policy_contract?(expected_keys) if expected_keys.empty?
 
       bind_keys = Array(@bind_spec).filter_map { |bind| bind[:key]&.to_s }
       param_keys = @params.keys.map(&:to_s)
@@ -363,6 +365,12 @@ module CodeToQuery
           @sql, @intent['table'], bind[:column], index + 1, adapter: @config.adapter
         )
       end
+    end
+
+    def compiler_policy_contract?(expected_keys)
+      @policy_contract.is_a?(Compiler::PolicyContract) &&
+        @policy_contract.adapter.equal?(@config.policy_adapter) &&
+        @policy_contract.expected_keys == expected_keys
     end
 
     def policy_predicates_expected?
@@ -770,4 +778,5 @@ module CodeToQuery
       end
     end
   end
+  # rubocop:enable Metrics/ClassLength
 end

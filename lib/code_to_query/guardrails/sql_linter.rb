@@ -12,6 +12,7 @@ module CodeToQuery
         normalized = sql.to_s.strip.gsub(/\s+/, ' ')
 
         check_statement_type!(normalized)
+        check_unsupported_table_query_expressions!(normalized)
         check_dangerous_patterns!(normalized)
         check_required_limit!(normalized)
         check_table_allowlist!(normalized) if @allow_tables.any?
@@ -38,6 +39,13 @@ module CodeToQuery
         dangerous_keywords.each do |keyword|
           raise SecurityError, "Dangerous keyword '#{keyword}' is not allowed" if sql.match?(/\b#{keyword}\b/i)
         end
+      end
+
+      def check_unsupported_table_query_expressions!(sql)
+        return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
+        return unless sql.match?(/\bTABLE\s+(?:ONLY\s+)?(?:"|[a-zA-Z_])/i)
+
+        raise SecurityError, 'PostgreSQL TABLE query expressions are not supported'
       end
 
       def check_dangerous_patterns!(sql)

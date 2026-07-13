@@ -371,10 +371,42 @@ RSpec.describe CodeToQuery::Query do
       expect(q).to have_received(:perform_safety_checks).once
     end
 
-    it 'returns true for allowlist-only policy adapters with no injected predicates' do
+    it 'returns true for a compiler-verified allowlist-only policy with no injected predicates' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 }
+      )
+      q = described_class.new(
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], config: config,
+        policy_contract: compiled[:policy_contract]
+      )
 
-      expect(query.safe?).to be true
+      expect(q.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'fails closed when a directly constructed query has no compiler policy contract' do
+      config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
+
+      expect(query.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'fails closed when policy enforcement is enabled after compilation' do
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 }
+      )
+      config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
+      q = described_class.new(
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], config: config,
+        policy_contract: compiled[:policy_contract]
+      )
+
+      expect(q.safe?).to be false
     ensure
       config.policy_adapter = nil
     end

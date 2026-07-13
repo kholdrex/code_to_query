@@ -11,6 +11,8 @@ end
 module CodeToQuery
   # rubocop:disable Metrics/ClassLength
   class Compiler
+    PolicyContract = Struct.new(:adapter, :expected_keys, keyword_init: true)
+
     def initialize(config)
       @config = config
     end
@@ -25,6 +27,7 @@ module CodeToQuery
                  compile_with_string_building(intent_with_policy, current_user)
                end
       verify_compiled_policy_binds!(result)
+      result[:policy_contract] = build_policy_contract(result) if @config.policy_adapter.respond_to?(:call)
       result
     end
 
@@ -606,6 +609,13 @@ module CodeToQuery
       return if missing.empty?
 
       raise PolicyAdapterError, "Compiled policy binds are missing: #{missing.join(', ')}"
+    end
+
+    def build_policy_contract(result)
+      PolicyContract.new(
+        adapter: @config.policy_adapter,
+        expected_keys: Array(result.dig(:intent, '__policy_expected_keys')).map(&:to_s).uniq.freeze
+      ).freeze
     end
 
     def deep_dup_value(value)

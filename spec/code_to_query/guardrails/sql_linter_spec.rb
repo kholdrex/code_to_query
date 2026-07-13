@@ -79,6 +79,18 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         expect { linter.check!(sql) }.to raise_error(SecurityError, /not in the allowed list/)
       end
 
+      it 'rejects unsupported PostgreSQL TABLE query expressions inside subqueries' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (TABLE "admin_secrets") LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects TABLE query expressions used as nested set-operation operands' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (SELECT * FROM "users" UNION TABLE "admin_secrets") LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
       context 'with MySQL identifiers' do
         let(:config) { stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2) }
 

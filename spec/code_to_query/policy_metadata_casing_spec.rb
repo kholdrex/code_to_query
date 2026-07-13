@@ -27,7 +27,8 @@ RSpec.describe 'policy table metadata casing pipeline' do
       bind_spec: compiled[:bind_spec],
       intent: compiled[:intent],
       allow_tables: nil,
-      config: config
+      config: config,
+      policy_contract: compiled[:policy_contract]
     )
 
     [validated, compiled, query]

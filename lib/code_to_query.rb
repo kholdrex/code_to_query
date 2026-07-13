@@ -127,7 +127,8 @@ module CodeToQuery
       policy_applied: policy_applied
     }
     query = Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
-                      intent: compiled[:intent] || validated_intent, allow_tables: allow_tables, config: config)
+                      intent: compiled[:intent] || validated_intent, allow_tables: allow_tables, config: config,
+                      policy_contract: compiled[:policy_contract])
 
     begin
       Instrumentation.instrument(:lint, **lint_payload) do
