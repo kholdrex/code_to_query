@@ -4,6 +4,8 @@ require 'dry/schema'
 
 module CodeToQuery
   class Validator
+    DENY_ALL_POLICY_COLUMNS = [Object.new.freeze].freeze
+
     IntentSchema = Dry::Schema.Params do
       required(:type).filled(:string)
       required(:table).filled(:string)
@@ -266,7 +268,15 @@ module CodeToQuery
 
     def policy_columns_for_table(allowed_columns, table)
       entry = allowed_columns.find { |allowed_table, _columns| policy_table_allowed?(table, allowed_table) }
-      entry&.last
+      return entry.last if entry
+
+      return unless %i[postgres postgresql].include?(CodeToQuery.config.adapter.to_sym)
+      return unless allowed_columns.any? { |allowed_table, _columns| table.to_s.casecmp?(allowed_table) }
+
+      # PostgreSQL quotes identifiers, so a case-only policy key names a
+      # different table. Treat that near-match as an explicit denial rather
+      # than as an absent partial-policy entry.
+      DENY_ALL_POLICY_COLUMNS
     end
 
     def policy_column_allowed?(column, allowed_columns)

@@ -358,6 +358,87 @@ RSpec.describe CodeToQuery::Validator do
         expect { validator.validate(intent) }
           .to raise_error(ArgumentError, /selecting column 'secret' not permitted on 'users'/)
       end
+
+      context 'with a case-only PostgreSQL policy table-key mismatch' do
+        before do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'Users' => ['id'] } }
+          end
+        end
+
+        {
+          'selected column' => ->(intent) { intent['columns'] = ['id'] },
+          'filter column' => lambda do |intent|
+            intent['filters'] = [{ 'column' => 'id', 'op' => '=', 'param' => 'id' }]
+          end,
+          'ORDER BY column' => lambda do |intent|
+            intent['order'] = [{ 'column' => 'id', 'dir' => 'asc' }]
+          end,
+          'DISTINCT ON column' => ->(intent) { intent['distinct_on'] = ['id'] },
+          'GROUP BY column' => ->(intent) { intent['group_by'] = ['id'] },
+          'aggregation column' => lambda do |intent|
+            intent['aggregations'] = [{ 'type' => 'sum', 'column' => 'id' }]
+          end
+        }.each do |path, add_column_reference|
+          it "fails closed for the main-table #{path}" do
+            intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['*'] }
+            add_column_reference.call(intent)
+
+            expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'users'/)
+          end
+        end
+
+        %w[fk_column related_filters].each do |path|
+          it "fails closed for a related-table #{path} path" do
+            config.policy_adapter = lambda do |_user, **_kwargs|
+              { allowed_columns: { 'users' => ['id'], 'Orders' => %w[user_id status] } }
+            end
+            intent = {
+              'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+              'filters' => [{
+                'op' => 'exists', 'related_table' => 'orders',
+                'fk_column' => 'user_id', 'base_column' => 'id',
+                'related_filters' => [{ 'column' => 'status', 'op' => '=', 'param' => 'status' }]
+              }]
+            }
+
+            expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'orders'/)
+          end
+        end
+
+        it 'fails closed for a main-table base_column path' do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'Users' => ['id'], 'orders' => ['user_id'] } }
+          end
+          intent = {
+            'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+            'filters' => [{
+              'op' => 'exists', 'related_table' => 'orders',
+              'fk_column' => 'user_id', 'base_column' => 'id'
+            }]
+          }
+
+          expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'users'/)
+        end
+
+        it 'preserves partial policies for truly unrelated absent PostgreSQL table keys' do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'accounts' => ['id'] } }
+          end
+          intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['secret'] }
+
+          expect { validator.validate(intent) }.not_to raise_error
+        end
+
+        %i[mysql sqlite].each do |adapter|
+          it "retains #{adapter} case-insensitive table-key behavior" do
+            config.adapter = adapter
+            intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['id'] }
+
+            expect { validator.validate(intent) }.not_to raise_error
+          end
+        end
+      end
     end
 
     context 'with order clause' do
