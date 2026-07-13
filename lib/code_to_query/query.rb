@@ -341,7 +341,7 @@ module CodeToQuery
 
     def sql_linter_allow_tables
       related_tables = Array(@intent['__policy_related_tables']).compact.map(&:to_s).uniq
-      return effective_lint_allow_tables if related_tables.empty?
+      return effective_lint_allow_tables if related_tables.empty? || !allowlist_sources_present?
 
       (Array(effective_lint_allow_tables) + related_tables).compact.map(&:to_s).uniq
     end

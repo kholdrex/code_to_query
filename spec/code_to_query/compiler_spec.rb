@@ -1074,6 +1074,26 @@ RSpec.describe CodeToQuery::Compiler do
         expect(widened_query.safe?).to be false
       end
 
+      it 'preserves an unrestricted base policy when authorizing a related table' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          if kwargs[:table] == 'answers'
+            { allowed_tables: %w[answers users], enforced_predicates: { tenant_id: 42 } }
+          else
+            {}
+          end
+        end
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: nil, config: config
+        )
+
+        expect(result[:intent]).not_to have_key('__policy_allowed_tables')
+        expect(result[:intent]['__policy_related_tables']).to eq(['answers'])
+        expect(query.safe?).to be true
+      end
+
       it 'does not mutate the caller intent while recording subquery policy expectations' do
         config.policy_adapter = lambda do |_user, **kwargs|
           kwargs[:table] == 'answers' ? { enforced_predicates: { tenant_id: 42 } } : {}
