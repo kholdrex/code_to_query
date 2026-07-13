@@ -89,7 +89,7 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       expressions = [
         'SELECT EXISTS (TABLE U&"secrets") LIMIT 1',
         %q(SELECT EXISTS (TABLE U&"s\0065crets") LIMIT 1),
-        %q(SELECT EXISTS (TABLE U&"schema".U&"secr""ets") LIMIT 1),
+        'SELECT EXISTS (TABLE U&"schema".U&"secr""ets") LIMIT 1',
         %q(SELECT EXISTS (TABLE U&"s!0065crets" UESCAPE '!') LIMIT 1)
       ]
 
