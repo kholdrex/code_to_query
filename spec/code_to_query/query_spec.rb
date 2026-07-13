@@ -104,11 +104,40 @@ RSpec.describe CodeToQuery::Query do
     it 'returns the SQL string' do
       expect(query.sql).to eq(sql)
     end
+
+    it 'keeps internal SQL isolated from constructor and accessor mutations' do
+      mutable_sql = sql.dup
+      q = described_class.new(
+        sql: mutable_sql, params: params, bind_spec: bind_spec, intent: intent,
+        allow_tables: ['users'], config: config
+      )
+      expect(q.safe?).to be true
+
+      mutable_sql.replace('DROP TABLE users')
+      returned_sql = q.sql
+      returned_sql.replace('DROP TABLE users')
+
+      expect(q.sql).to eq(sql)
+    end
   end
 
   describe '#params' do
     it 'returns the parameters hash' do
       expect(query.params).to eq(params)
+    end
+
+    it 'keeps internal nested parameters isolated from constructor and accessor mutations' do
+      nested_params = { 'filters' => [{ 'value' => 'active'.dup }] }
+      q = described_class.new(
+        sql: sql, params: nested_params, bind_spec: [], intent: intent,
+        allow_tables: ['users'], config: config
+      )
+
+      nested_params['filters'].first['value'].replace('tampered')
+      returned_params = q.params
+      returned_params['filters'].first['value'].replace('tampered')
+
+      expect(q.params.dig('filters', 0, 'value')).to eq('active')
     end
 
     it 'adds between defaults derived from column names for legacy start/end params' do
@@ -189,6 +218,26 @@ RSpec.describe CodeToQuery::Query do
 
       expect(q.params['created_at_end']).to eq('2023-12-31')
       expect(q.params).not_to have_key('created_at_start')
+    end
+  end
+
+  describe '#intent' do
+    it 'keeps internal nested intent isolated from constructor and accessor mutations' do
+      mutable_intent = {
+        'table' => 'users'.dup,
+        'type' => 'select',
+        'filters' => [{ 'column' => 'active'.dup, 'op' => '=' }]
+      }
+      q = described_class.new(
+        sql: sql, params: params, bind_spec: bind_spec, intent: mutable_intent,
+        allow_tables: ['users'], config: config
+      )
+
+      mutable_intent['filters'].first['column'].replace('admin')
+      returned_intent = q.intent
+      returned_intent['filters'].first['column'].replace('admin')
+
+      expect(q.intent.dig('filters', 0, 'column')).to eq('active')
     end
   end
 
@@ -1236,6 +1285,28 @@ RSpec.describe CodeToQuery::Query do
   end
 
   describe '#run' do
+    it 'executes the protected SQL after constructor and accessor values are mutated' do
+      mutable_sql = sql.dup
+      mutable_intent = intent.transform_values { |value| value.is_a?(String) ? value.dup : value }
+      mutable_allow_tables = ['users'.dup]
+      q = described_class.new(
+        sql: mutable_sql, params: params, bind_spec: [], intent: mutable_intent,
+        allow_tables: mutable_allow_tables, config: config
+      )
+      runner = instance_double(CodeToQuery::Runner, run: :result)
+      allow(CodeToQuery::Runner).to receive(:new).with(config).and_return(runner)
+
+      expect(q.safe?).to be true
+      mutable_sql.replace('DROP TABLE users')
+      mutable_intent['table'].replace('admins')
+      mutable_allow_tables.first.replace('admins')
+      q.sql.replace('DROP TABLE users')
+      q.intent['table'].replace('admins')
+
+      expect(q.run).to eq(:result)
+      expect(runner).to have_received(:run).with(sql: sql, binds: [])
+    end
+
     it 'emits run instrumentation and delegates to Runner' do
       events = []
       subscriber = ActiveSupport::Notifications.subscribe('code_to_query.run') do |_name, _started, _finished, _id, payload|
@@ -1260,6 +1331,28 @@ RSpec.describe CodeToQuery::Query do
       )
     ensure
       ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+    end
+
+    it 're-runs safety checks at the execution boundary instead of trusting the cached result' do
+      allow(query).to receive(:perform_safety_checks).and_return(true, false)
+      allow(CodeToQuery::Runner).to receive(:new)
+
+      expect(query.safe?).to be true
+
+      expect { query.run }.to raise_error(SecurityError, /failed safety checks/)
+      expect(query).to have_received(:perform_safety_checks).twice
+      expect(CodeToQuery::Runner).not_to have_received(:new)
+    end
+
+    it 'fails closed when an unsafe query is run directly' do
+      unsafe_query = described_class.new(
+        sql: 'DROP TABLE users', params: {}, bind_spec: [], intent: intent,
+        allow_tables: ['users'], config: config
+      )
+      allow(CodeToQuery::Runner).to receive(:new)
+
+      expect { unsafe_query.run }.to raise_error(SecurityError, /failed safety checks/)
+      expect(CodeToQuery::Runner).not_to have_received(:new)
     end
   end
 

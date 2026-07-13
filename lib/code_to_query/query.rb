@@ -9,18 +9,37 @@ require_relative 'query/sql_scanning'
 
 module CodeToQuery
   class Query
-    attr_reader :sql, :params, :intent, :metrics
-
     def initialize(sql:, params:, bind_spec:, intent:, allow_tables:, config:)
-      @sql = sql
-      @params = normalize_params_with_between_defaults(params || {}, intent['filters'])
-      @bind_spec = bind_spec || []
-      @intent = intent || {}
-      @allow_tables = allow_tables
+      copied_intent = deep_copy(intent || {})
+      copied_params = deep_copy(params || {})
+
+      @sql = deep_freeze(deep_copy(sql))
+      @params = deep_freeze(normalize_params_with_between_defaults(copied_params, copied_intent['filters']))
+      @bind_spec = deep_freeze(deep_copy(bind_spec || []))
+      @intent = deep_freeze(copied_intent)
+      @allow_tables = deep_freeze(deep_copy(allow_tables))
       @config = config
       @safety_checked = false
       @safety_result = nil
-      @metrics = extract_metrics_from_intent(@intent)
+      @metrics = deep_freeze(extract_metrics_from_intent(@intent))
+    end
+
+    # Return mutable copies for backwards compatibility without exposing the
+    # immutable state used by safety checks and execution.
+    def sql
+      deep_copy(@sql)
+    end
+
+    def params
+      deep_copy(@params)
+    end
+
+    def intent
+      deep_copy(@intent)
+    end
+
+    def metrics
+      deep_copy(@metrics)
     end
 
     def binds
@@ -138,7 +157,7 @@ module CodeToQuery
 
     def preview
       {
-        sql: @sql,
+        sql: deep_copy(@sql),
         params: preview_params,
         applied_policies: applied_policy_keys,
         estimated_cost: nil,
@@ -148,11 +167,42 @@ module CodeToQuery
 
     def run
       CodeToQuery::Instrumentation.instrument(:run, telemetry_payload) do
+        raise SecurityError, 'Query failed safety checks at execution boundary' unless perform_safety_checks
+
         Runner.new(@config).run(sql: @sql, binds: binds)
       end
     end
 
     private
+
+    def deep_copy(value)
+      case value
+      when Hash
+        value.each_with_object({}) { |(key, item), copy| copy[deep_copy(key)] = deep_copy(item) }
+      when Array
+        value.map { |item| deep_copy(item) }
+      when Symbol, Numeric, true, false, nil
+        value
+      else
+        value.dup
+      end
+    rescue TypeError
+      value
+    end
+
+    def deep_freeze(value)
+      case value
+      when Hash
+        value.each do |key, item|
+          deep_freeze(key)
+          deep_freeze(item)
+        end
+      when Array
+        value.each { |item| deep_freeze(item) }
+      end
+
+      value.freeze
+    end
 
     def telemetry_payload
       {

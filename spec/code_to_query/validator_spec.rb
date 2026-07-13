@@ -180,6 +180,103 @@ RSpec.describe CodeToQuery::Validator do
       end
     end
 
+    context 'with policy column restrictions on related subqueries' do
+      before do
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          {
+            allowed_tables: %w[users orders],
+            allowed_columns: {
+              'users' => %w[id email],
+              'orders' => %w[user_id status]
+            }
+          }
+        end
+      end
+
+      def related_subquery_intent(operator, fk_column: 'user_id', base_column: 'id')
+        {
+          'type' => 'select',
+          'table' => 'users',
+          'columns' => ['email'],
+          'filters' => [
+            {
+              'op' => operator,
+              'related_table' => 'orders',
+              'fk_column' => fk_column,
+              'base_column' => base_column,
+              'related_filters' => [
+                { 'column' => 'status', 'op' => '=', 'param' => 'status' }
+              ]
+            }
+          ]
+        }
+      end
+
+      %w[exists not_exists].each do |op|
+        it "allows #{op} when both correlated columns are policy-permitted" do
+          result = validator.validate(related_subquery_intent(op))
+
+          expect(result[:filters].first).to include(fk_column: 'user_id', base_column: 'id')
+        end
+
+        it "rejects #{op} when fk_column is not permitted on the related table" do
+          expect do
+            validator.validate(related_subquery_intent(op, fk_column: 'secret_user_id'))
+          end.to raise_error(ArgumentError, /column 'secret_user_id' not permitted on 'orders'/)
+        end
+
+        it "rejects #{op} when base_column is not permitted on the main table" do
+          expect do
+            validator.validate(related_subquery_intent(op, base_column: 'secret_id'))
+          end.to raise_error(ArgumentError, /column 'secret_id' not permitted on 'users'/)
+        end
+
+        it "uses and checks the default id base_column for #{op} when it is omitted" do
+          subquery_intent = related_subquery_intent(op)
+          subquery_intent['filters'].first.delete('base_column')
+
+          result = validator.validate(subquery_intent)
+
+          expect(result[:filters].first[:base_column]).to eq('id')
+        end
+
+        it "rejects #{op} when the omitted base_column defaults to a disallowed id" do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            {
+              allowed_tables: %w[users orders],
+              allowed_columns: {
+                'users' => ['email'],
+                'orders' => %w[user_id status]
+              }
+            }
+          end
+          subquery_intent = related_subquery_intent(op)
+          subquery_intent['filters'].first.delete('base_column')
+
+          expect do
+            validator.validate(subquery_intent)
+          end.to raise_error(ArgumentError, /column 'id' not permitted on 'users'/)
+        end
+
+        it "does not restrict #{op} correlation columns for nil or empty per-table lists" do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            {
+              allowed_tables: %w[users orders],
+              allowed_columns: { 'users' => nil, 'orders' => [] }
+            }
+          end
+
+          result = validator.validate(
+            related_subquery_intent(op, fk_column: 'legacy_user_key', base_column: 'legacy_id')
+          )
+
+          expect(result[:filters].first).to include(
+            fk_column: 'legacy_user_key', base_column: 'legacy_id'
+          )
+        end
+      end
+    end
+
     context 'with order clause' do
       it 'validates order clause' do
         intent = {

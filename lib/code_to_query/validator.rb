@@ -213,6 +213,10 @@ module CodeToQuery
         if %w[exists not_exists].include?(op)
           related_table = fetch_value(f, :related_table)
           rel_cols = normalized[related_table.to_s.downcase]
+
+          ensure_policy_column_allowed!(fetch_value(f, :fk_column), related_table, rel_cols)
+          ensure_policy_column_allowed!(fetch_value(f, :base_column), main_table, normalized[main_table])
+
           next if rel_cols.nil? || rel_cols.empty?
 
           Array(fetch_value(f, :related_filters)).each do |rf|
@@ -238,6 +242,13 @@ module CodeToQuery
     rescue StandardError => e
       # Re-raise as ArgumentError to keep validator contract
       raise ArgumentError, e.message
+    end
+
+    def ensure_policy_column_allowed!(column, table, allowed_columns)
+      return if allowed_columns.nil? || allowed_columns.empty?
+      return if allowed_columns.include?(column.to_s.downcase)
+
+      raise ArgumentError, "Invalid intent: column '#{column}' not permitted on '#{table}'"
     end
 
     def safe_call_policy_adapter(adapter, current_user, table:, intent:)
