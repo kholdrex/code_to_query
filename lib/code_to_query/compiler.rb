@@ -85,32 +85,7 @@ module CodeToQuery
     end
 
     def safely_fetch_policy(table:, current_user:, intent: nil)
-      if intent
-        @config.policy_adapter.call(current_user, table: table, intent: intent)
-      else
-        @config.policy_adapter.call(current_user, table: table)
-      end
-    rescue ArgumentError => e
-      raise unless policy_signature_mismatch?(e)
-
-      # Backward compatibility: adapters may accept user plus table or only user.
-      begin
-        @config.policy_adapter.call(current_user, table: table)
-      rescue ArgumentError => fallback_error
-        raise fallback_error unless policy_signature_mismatch?(fallback_error)
-
-        begin
-          @config.policy_adapter.call(current_user)
-        rescue StandardError => e
-          return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
-
-          raise policy_failure("Policy adapter failed: #{e.message}")
-        end
-      rescue StandardError => e
-        return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
-
-        raise policy_failure("Policy adapter failed: #{e.message}")
-      end
+      PolicyAdapterInvoker.call(@config.policy_adapter, current_user, table: table, intent: intent)
     rescue StandardError => e
       return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
 
@@ -147,10 +122,6 @@ module CodeToQuery
         %i[enforced_predicates predicates allowed_tables allowed_columns].include?(key) ||
           %w[enforced_predicates predicates allowed_tables allowed_columns].include?(key.to_s)
       end
-    end
-
-    def policy_signature_mismatch?(error)
-      error.message.match?(/unknown keyword.*intent|wrong number of arguments|no keywords accepted/)
     end
 
     def policy_adapter_fail_open?

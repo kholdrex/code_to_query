@@ -803,6 +803,16 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:bind_spec]).to include(hash_including(key: 'policy_tenant_id', column: 'tenant_id'))
       end
 
+      it 'supports legacy policy adapters that accept only current user' do
+        config.policy_adapter = ->(user) { { enforced_predicates: { tenant_id: user.fetch(:tenant_id) } } }
+        allow(config.policy_adapter).to receive(:call).and_call_original
+
+        result = compiler.compile(intent, current_user: { tenant_id: 42 })
+
+        expect(result[:params]).to include('policy_tenant_id' => 42)
+        expect(config.policy_adapter).to have_received(:call).once
+      end
+
       it 'fails closed when the adapter raises' do
         config.policy_adapter = ->(_user, **) { raise 'policy service unavailable' }
 
@@ -865,6 +875,21 @@ RSpec.describe CodeToQuery::Compiler do
         expect { compiler.compile(intent) }.to raise_error(
           CodeToQuery::PolicyAdapterError, /policy rejected orders/
         )
+      end
+
+      ['wrong number of arguments', 'unknown keyword: :intent'].each do |message|
+        it "invokes an intent-aware adapter once and fails closed when it internally raises #{message.inspect}" do
+          calls = 0
+          config.policy_adapter = lambda do |_user, table:, intent:|
+            calls += 1
+            raise ArgumentError, message if table == 'orders' && intent
+          end
+
+          expect { compiler.compile(intent) }.to raise_error(
+            CodeToQuery::PolicyAdapterError, /Policy adapter failed: #{Regexp.escape(message)}/
+          )
+          expect(calls).to eq(1)
+        end
       end
 
       it 'documents explicit availability mode by allowing fail open only when configured' do

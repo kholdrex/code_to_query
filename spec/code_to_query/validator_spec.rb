@@ -422,8 +422,11 @@ RSpec.describe CodeToQuery::Validator do
       end
 
       it 'falls back to simpler call signature' do
+        allow(adapter).to receive(:call).and_call_original
+
         result = validator.send(:safe_call_policy_adapter, adapter, nil, table: 'orders', intent: {})
         expect(result[:allowed_tables]).to eq(['orders'])
+        expect(adapter).to have_received(:call).once
       end
     end
 
@@ -434,6 +437,7 @@ RSpec.describe CodeToQuery::Validator do
 
       it 'falls back to current-user-only call signature under fail-closed default' do
         CodeToQuery.config.policy_adapter_fail_open = false
+        allow(adapter).to receive(:call).and_call_original
 
         result = validator.send(
           :safe_call_policy_adapter,
@@ -444,6 +448,7 @@ RSpec.describe CodeToQuery::Validator do
         )
 
         expect(result[:allowed_tables]).to eq(['accounts'])
+        expect(adapter).to have_received(:call).once
       end
     end
 
@@ -468,6 +473,23 @@ RSpec.describe CodeToQuery::Validator do
         result = validator.send(:safe_call_policy_adapter, adapter, nil, table: 'users', intent: {})
 
         expect(result).to eq({})
+      end
+    end
+
+    context 'when a compatible adapter raises a signature-like ArgumentError internally' do
+      ['wrong number of arguments', 'unknown keyword: :intent'].each do |message|
+        it "invokes the adapter once and fails closed for #{message.inspect}" do
+          calls = 0
+          adapter = lambda do |_user, table:, intent:|
+            calls += 1
+            raise ArgumentError, message if table == 'users' && intent
+          end
+
+          expect do
+            validator.send(:safe_call_policy_adapter, adapter, nil, table: 'users', intent: {})
+          end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy adapter failed: #{Regexp.escape(message)}/)
+          expect(calls).to eq(1)
+        end
       end
     end
   end
