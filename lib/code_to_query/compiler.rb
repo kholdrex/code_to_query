@@ -384,6 +384,7 @@ module CodeToQuery
 
     def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       col = quote_ident(filter['column'])
+      col = "#{quote_ident(table)}.#{col}" if base_policy_filter?(filter, intent)
       case filter['op']
       when '=', '>', '<', '>=', '<=', '!=', '<>'
         build_string_comparison_fragment(col, filter, bind_spec, placeholder_index)
@@ -683,6 +684,13 @@ module CodeToQuery
 
     def filter_bind_key(filter)
       filter['param'] || filter['column']
+    end
+
+    def base_policy_filter?(filter, intent)
+      expected_keys = Array(intent['__policy_expected_keys']).map(&:to_s)
+      filter_keys = [filter['param'], filter['param_start'], filter['param_end']].compact.map(&:to_s)
+
+      filter_keys.any? { |key| expected_keys.include?(key) && !key.start_with?('policy_subquery_') }
     end
 
     def between_bind_keys(filter)

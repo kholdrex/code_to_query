@@ -925,10 +925,30 @@ RSpec.describe CodeToQuery::Compiler do
 
         result = compiler.compile(intent)
 
-        expect(result[:sql]).to include('WHERE "status" = $1 AND "tenant_id" = $2')
+        expect(result[:sql]).to include('WHERE "status" = $1 AND "orders"."tenant_id" = $2')
         expect(result[:params]).to include('status' => 'paid', 'policy_tenant_id' => 42)
         expect(result[:bind_spec]).to include(hash_including(key: 'status', column: 'status'))
         expect(result[:bind_spec]).to include(hash_including(key: 'policy_tenant_id', column: 'tenant_id'))
+      end
+
+      it 'produces a safe query with adapter-quoted policy identifiers when string building is forced' do
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          { allowed_tables: ['AuditEvents'], enforced_predicates: { 'TenantID' => 42 } }
+        end
+        allow(compiler).to receive(:use_arel?).and_return(false)
+        intent = {
+          'type' => 'select', 'table' => 'AuditEvents', 'columns' => ['*'],
+          'filters' => [], 'limit' => 100, 'params' => {}
+        }
+
+        result = compiler.compile(intent)
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: nil, config: config
+        )
+
+        expect(result[:sql]).to include('"AuditEvents"."TenantID" = $1')
+        expect(query.safe?).to be true
       end
 
       it 'does not let prompt-sourced filters override tenant predicates' do
@@ -943,7 +963,7 @@ RSpec.describe CodeToQuery::Compiler do
 
         result = compiler.compile(intent)
 
-        expect(result[:sql]).to include('"tenant_id" != $1 AND "tenant_id" = $2')
+        expect(result[:sql]).to include('"tenant_id" != $1 AND "orders"."tenant_id" = $2')
         expect(result[:params]).to include('attacker_tenant_id' => 42, 'policy_tenant_id' => 42)
       end
     end
@@ -1154,11 +1174,35 @@ RSpec.describe CodeToQuery::Compiler do
         subquery_key = 'policy_subquery_1_answers_tenant_id'
 
         expect(result[:sql]).to include('"answers"."tenant_id" = $1')
-        expect(result[:sql]).to include('"tenant_id" = $2')
+        expect(result[:sql]).to include('"questions"."tenant_id" = $2')
         expect(result[:params]['policy_tenant_id']).to eq(42)
         expect(result[:params][subquery_key]).to eq(7)
         expect(result[:bind_spec]).to include(hash_including(key: subquery_key, column: :tenant_id))
         expect(result[:bind_spec]).to include(hash_including(key: 'policy_tenant_id', column: 'tenant_id'))
+      end
+
+      it 'produces a safe EXISTS query with qualified base and related policy predicates' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          case kwargs[:table]
+          when 'questions'
+            { allowed_tables: %w[questions answers], enforced_predicates: { tenant_id: 42 } }
+          when 'answers'
+            { allowed_tables: ['answers'], enforced_predicates: { tenant_id: 7 } }
+          else
+            {}
+          end
+        end
+        allow(compiler).to receive(:use_arel?).and_return(true)
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: nil, config: config
+        )
+
+        expect(result[:sql]).to include('"answers"."tenant_id" = $1')
+        expect(result[:sql]).to include('"questions"."tenant_id" = $2')
+        expect(query.safe?).to be true
       end
 
       it 'uses separate bind keys for multiple related-table policies on the same column name' do
