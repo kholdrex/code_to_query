@@ -210,6 +210,16 @@ module CodeToQuery
         end
       end
 
+      # Aggregation columns
+      Array(fetch_value(intent, :aggregations)).each do |aggregation|
+        col = fetch_value(aggregation, :column)
+        next if col.nil?
+        next unless main_columns&.any?
+        unless policy_column_allowed?(col, main_columns)
+          raise ArgumentError, "Invalid intent: aggregation column '#{col}' not permitted on '#{main_table}'"
+        end
+      end
+
       # WHERE filters
       Array(fetch_value(intent, :filters)).each do |f|
         op = fetch_value(f, :op).to_s
@@ -279,7 +289,7 @@ module CodeToQuery
     end
 
     def policy_table_allowed?(table, allowed)
-      return table.to_s.casecmp?(allowed.to_s) if CodeToQuery.config.adapter.to_sym == :sqlite
+      return table.to_s.casecmp?(allowed.to_s) if %i[mysql sqlite].include?(CodeToQuery.config.adapter.to_sym)
 
       table.to_s == allowed.to_s
     end

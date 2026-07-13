@@ -282,7 +282,7 @@ RSpec.describe CodeToQuery::Validator do
         {
           allowed_tables: %w[users orders],
           allowed_columns: {
-            'users' => %w[id UserCode],
+            'users' => %w[id UserCode PublicTotal],
             'orders' => %w[user_id User_ID status StatusCode]
           }
         }
@@ -312,6 +312,14 @@ RSpec.describe CodeToQuery::Validator do
 
       {
         'selected column' => ->(intent) { intent['columns'] = ['usercode'] },
+        'ORDER BY column' => lambda do |intent|
+          intent['order'] = [{ 'column' => 'usercode', 'dir' => 'asc' }]
+        end,
+        'DISTINCT ON column' => ->(intent) { intent['distinct_on'] = ['usercode'] },
+        'GROUP BY column' => ->(intent) { intent['group_by'] = ['usercode'] },
+        'aggregation column' => lambda do |intent|
+          intent['aggregations'] = [{ 'type' => 'sum', 'column' => 'publictotal' }]
+        end,
         'main-table filter column' => lambda do |intent|
           intent['filters'] = [{ 'column' => 'usercode', 'op' => '=', 'param' => 'code' }]
         end,
@@ -338,6 +346,17 @@ RSpec.describe CodeToQuery::Validator do
 
           expect { validator.validate(intent) }.not_to raise_error
         end
+      end
+
+      it 'uses case-insensitive MySQL policy table keys when enforcing columns' do
+        config.adapter = :mysql
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          { allowed_columns: { 'Users' => ['id'] } }
+        end
+        intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['secret'] }
+
+        expect { validator.validate(intent) }
+          .to raise_error(ArgumentError, /selecting column 'secret' not permitted on 'users'/)
       end
     end
 
