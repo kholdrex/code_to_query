@@ -330,6 +330,25 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'rejects a differently cased quoted PostgreSQL identifier from a lowercase allowlist' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "USERS" LIMIT 100', params: {}, bind_spec: [],
+        intent: { 'table' => 'users', 'type' => 'select' }, allow_tables: ['users'], config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'rejects an undeclared EXISTS table even when the top-level allowlist permits it' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers")',
+        params: {}, bind_spec: [], intent: { 'table' => 'questions', 'type' => 'select', 'filters' => [] },
+        allow_tables: %w[questions answers], config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'returns false when expected subquery policy keys are missing from binds and params' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
 

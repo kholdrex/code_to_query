@@ -368,9 +368,8 @@ module CodeToQuery
       end
 
       def extract_table_reference_name(reference)
-        identifier = '(?:`[^`]+`|"[^"]+"|\'[^\']+\'|[a-zA-Z0-9_]+)'
         alias_identifier = '(?:`[^`]+`|"[^"]+"|\'[^\']+\'|[a-zA-Z_][a-zA-Z0-9_]*)'
-        table_reference_pattern = /\A(?:#{identifier}\.)*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
+        table_reference_pattern = /\A(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
 
         match = reference.to_s.strip.match(table_reference_pattern)
         captures = match&.captures

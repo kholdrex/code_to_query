@@ -368,7 +368,9 @@ module CodeToQuery
       raise SecurityError, 'Top-level derived tables are not allowed' if top_level_sql.match?(/(?:\bFROM\b|\bJOIN\b|,)\s*(?:LATERAL\s+)?\(/i)
 
       extract_table_names(top_level_sql).each do |table|
-        next if allowed_tables.include?(table.to_s.downcase)
+        # Preserve quoted identifier case. Downcasing here would make a distinct
+        # PostgreSQL table such as "USERS" match an allowlisted `users` table.
+        next if allowed_tables.include?(table.to_s)
 
         raise SecurityError, "Table '#{table}' is not in the allowed list: #{allowed_tables.join(', ')}"
       end
@@ -376,7 +378,7 @@ module CodeToQuery
 
     def check_policy_scoped_related_table_references!
       policy_scoped_related_tables = declared_related_tables
-      return if policy_scoped_related_tables.empty?
+      return unless allowlist_sources_present?
 
       extract_table_names(strip_exists_subqueries(@sql)).each do |table|
         next unless policy_scoped_related_tables.include?(table.to_s.downcase)
@@ -397,8 +399,11 @@ module CodeToQuery
       subqueries = sql_scanner.exists_subqueries(@sql)
       subqueries.each do |subquery|
         extract_table_names(strip_exists_subqueries(subquery[:sql])).each do |table|
-          normalized_table = table.to_s.downcase
-          next unless policy_scoped_related_tables.include?(normalized_table)
+          normalized_table = table.to_s
+          unless policy_scoped_related_tables.include?(normalized_table)
+            raise SecurityError,
+                  "Table '#{table}' has an undeclared #{subquery[:operator].upcase} reference"
+          end
 
           reference = [subquery[:operator], normalized_table]
           sql_references[reference] += 1

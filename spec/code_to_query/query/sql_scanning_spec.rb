@@ -139,6 +139,11 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
   end
 
   describe '#extract_table_names' do
+    it 'fails closed for qualified table references instead of discarding the qualifier' do
+      expect { scanner.extract_table_names('SELECT * FROM evil.users') }
+        .to raise_error(SecurityError, /Unsupported FROM reference/)
+    end
+
     it 'does not let identifier quotes inside string literals hide executable table references' do
       expect(scanner.extract_table_names(%q(SELECT '"' FROM"forbidden"))).to eq(['forbidden'])
       expect(scanner.extract_table_names("SELECT '`' FROM`forbidden`")).to eq(['forbidden'])
