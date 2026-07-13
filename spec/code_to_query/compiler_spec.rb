@@ -993,13 +993,15 @@ RSpec.describe CodeToQuery::Compiler do
         untrusted_intent = {
           'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
           '__policy_expected_keys' => ['policy_attacker'],
-          '__policy_allowed_tables' => ['attacker_secrets']
+          '__policy_allowed_tables' => ['attacker_secrets'],
+          '__policy_related_tables' => ['attacker_secrets']
         }
 
         result = compiler.compile(untrusted_intent)
 
         expect(result[:intent]).not_to have_key('__policy_expected_keys')
         expect(result[:intent]).not_to have_key('__policy_allowed_tables')
+        expect(result[:intent]).not_to have_key('__policy_related_tables')
       end
 
       it 'replaces caller-supplied allowlist metadata with the enforced policy allowlist' do
@@ -1040,14 +1042,14 @@ RSpec.describe CodeToQuery::Compiler do
         end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy does not allow related table: answers/)
       end
 
-      it 'records related-table allowlists returned by the subquery policy adapter' do
+      it 'does not widen top-level authorization with related-table policy metadata' do
         config.policy_adapter = lambda do |_user, **kwargs|
           case kwargs[:table]
           when 'questions'
             { allowed_tables: ['questions'] }
           when 'answers'
             {
-              allowed_tables: %w[questions answers],
+              allowed_tables: %w[answers users],
               enforced_predicates: { tenant_id: 42 }
             }
           else
@@ -1056,8 +1058,20 @@ RSpec.describe CodeToQuery::Compiler do
         end
 
         result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        query_options = {
+          params: result[:params], bind_spec: result[:bind_spec], intent: result[:intent],
+          allow_tables: nil, config: config
+        }
+        correlated_query = CodeToQuery::Query.new(sql: result[:sql], **query_options)
+        widened_query = CodeToQuery::Query.new(
+          sql: result[:sql].sub('FROM "questions"', 'FROM "questions" JOIN "users" ON TRUE'),
+          **query_options
+        )
 
-        expect(result[:intent]['__policy_allowed_tables']).to eq(%w[questions answers])
+        expect(result[:intent]['__policy_allowed_tables']).to eq(['questions'])
+        expect(result[:intent]['__policy_related_tables']).to eq(['answers'])
+        expect(correlated_query.safe?).to be true
+        expect(widened_query.safe?).to be false
       end
 
       it 'does not mutate the caller intent while recording subquery policy expectations' do

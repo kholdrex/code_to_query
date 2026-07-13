@@ -587,6 +587,12 @@ module CodeToQuery
         raise PolicyAdapterError, "Policy does not allow related table: #{required_table}"
       end
 
+      if required_table
+        intent['__policy_related_tables'] =
+          (Array(intent['__policy_related_tables']) + [required_table.to_s]).uniq
+        return
+      end
+
       if intent.key?('__policy_allowed_tables')
         existing = Array(intent['__policy_allowed_tables'])
         intent['__policy_allowed_tables'] = if existing.empty? || allowed_tables.empty?
@@ -610,6 +616,8 @@ module CodeToQuery
       intent.delete(:__policy_expected_keys)
       intent.delete('__policy_allowed_tables')
       intent.delete(:__policy_allowed_tables)
+      intent.delete('__policy_related_tables')
+      intent.delete(:__policy_related_tables)
     end
 
     # Independent compiler backstop: metadata alone never proves that a policy

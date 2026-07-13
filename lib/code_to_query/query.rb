@@ -339,6 +339,13 @@ module CodeToQuery
       end
     end
 
+    def sql_linter_allow_tables
+      related_tables = Array(@intent['__policy_related_tables']).compact.map(&:to_s).uniq
+      return effective_lint_allow_tables if related_tables.empty?
+
+      (Array(effective_lint_allow_tables) + related_tables).compact.map(&:to_s).uniq
+    end
+
     def allowlist_sources_present?
       Array(@allow_tables).compact.any? || policy_allowlist_present?
     end
@@ -352,7 +359,7 @@ module CodeToQuery
         raise SecurityError, 'No tables remain after intersecting explicit and policy allowlists'
       end
 
-      Guardrails::SqlLinter.new(@config, allow_tables: effective_lint_allow_tables).check!(@sql)
+      Guardrails::SqlLinter.new(@config, allow_tables: sql_linter_allow_tables).check!(@sql)
       check_top_level_table_allowlist!
       check_policy_scoped_related_table_references!
     end
