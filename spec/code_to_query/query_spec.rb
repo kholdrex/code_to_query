@@ -349,6 +349,16 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'rejects an undeclared NOT EXISTS table when the intent declares no related tables' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE NOT EXISTS (SELECT 1 FROM "answers")',
+        params: {}, bind_spec: [], intent: { 'table' => 'questions', 'type' => 'select', 'filters' => [] },
+        allow_tables: %w[questions answers], config: config
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'returns false when expected subquery policy keys are missing from binds and params' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
 
