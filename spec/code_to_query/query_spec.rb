@@ -614,6 +614,19 @@ RSpec.describe CodeToQuery::Query do
       end
     end
 
+    it 'rejects a Unicode-confusable SQLite policy column predicate' do
+      policy_adapter = ->(_user, **) { { allowed_tables: ['kids'] } }
+      q = described_class.new(
+        sql: 'SELECT * FROM "kids" WHERE "kids"."Kind" = ? LIMIT 10',
+        params: { 'policy_kind' => 'student' },
+        bind_spec: [{ key: 'policy_kind', column: 'kind', cast: nil }],
+        intent: { 'table' => 'kids', 'type' => 'select', '__policy_expected_keys' => ['policy_kind'] },
+        allow_tables: ['kids'], config: stub_config(adapter: :sqlite, policy_adapter: policy_adapter)
+      )
+
+      expect(q.safe?).to be false
+    end
+
     it 'rejects a differently cased quoted PostgreSQL policy column' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
       q = described_class.new(

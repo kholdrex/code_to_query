@@ -577,7 +577,9 @@ module CodeToQuery
     end
 
     def policy_table_allowed?(table, allowed)
-      return table.to_s.casecmp?(allowed.to_s) if @config.adapter.to_sym == :sqlite
+      if @config.adapter.to_sym == :sqlite
+        return IdentifierSemantics.ascii_case_insensitive?(table, allowed)
+      end
 
       table.to_s == allowed.to_s
     end

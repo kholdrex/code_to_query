@@ -130,6 +130,23 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
       expect(scanner.policy_predicate_bind_numbers(sql, 'answers', 'tenant_id')).to eq([])
     end
 
+    it 'does not Unicode-case-fold policy identifiers on case-insensitive adapters' do
+      %i[sqlite mysql].each do |adapter|
+        sql = 'SELECT 1 FROM kids WHERE kids.Kind = $1'
+
+        expect(scanner.policy_predicate_bind_numbers(sql, 'kids', 'kind', adapter: adapter)).to eq([])
+      end
+    end
+
+    it 'limits PostgreSQL unquoted policy identifier folding to ASCII' do
+      sql = 'SELECT 1 FROM kids WHERE KIDS.KIND = $1'
+
+      expect(scanner.policy_predicate_bind_numbers(sql, 'kids', 'kind', adapter: :postgres)).to eq([])
+      expect(scanner.policy_predicate_bind_numbers(
+               'SELECT 1 FROM kids WHERE KIDS.KIND = $1', 'kids', 'kind', adapter: :postgres
+             )).to eq([1])
+    end
+
     it 'accepts compiler-shaped top-level conjuncts including BETWEEN' do
       sql = 'SELECT 1 FROM answers WHERE answers.question_id = questions.id ' \
             'AND answers.created_at BETWEEN $2 AND $3'

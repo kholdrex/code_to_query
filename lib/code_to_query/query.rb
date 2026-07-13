@@ -548,19 +548,19 @@ module CodeToQuery
     # identifiers. SQLite is the exception: it resolves identifiers without
     # regard to case even when they are quoted.
     def table_identifier_allowed?(identifier, allowed)
-      return identifier.name.casecmp?(allowed) if @config.adapter.to_sym == :sqlite
+      return IdentifierSemantics.ascii_case_insensitive?(identifier.name, allowed) if @config.adapter.to_sym == :sqlite
       # MySQL table-name case semantics depend on lower_case_table_names and
       # the host filesystem. Without server metadata, only exact case is safe.
       return identifier.name == allowed if @config.adapter.to_sym == :mysql
       return identifier.name == allowed if identifier.quoted
 
-      allowed == allowed.downcase && identifier.name.downcase == allowed
+      allowed == IdentifierSemantics.ascii_fold(allowed) && IdentifierSemantics.ascii_fold(identifier.name) == allowed
     end
 
     def allowlist_names_equivalent?(left, right)
-      return left.casecmp?(right) if @config.adapter.to_sym == :sqlite
+      return IdentifierSemantics.ascii_case_insensitive?(left, right) if @config.adapter.to_sym == :sqlite
 
-      left == right || (left == left.downcase && right == right.downcase && left.casecmp?(right))
+      left == right || (left == IdentifierSemantics.ascii_fold(left) && right == IdentifierSemantics.ascii_fold(right) && IdentifierSemantics.ascii_case_insensitive?(left, right))
     end
 
     def sql_scanner

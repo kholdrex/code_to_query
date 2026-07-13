@@ -346,6 +346,20 @@ RSpec.describe CodeToQuery::Validator do
 
           expect { validator.validate(intent) }.not_to raise_error
         end
+
+        it "does not Unicode-case-fold #{adapter} policy identifiers" do
+          config.adapter = adapter
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_tables: ['kids'], allowed_columns: { 'kids' => ['kind'] } }
+          end
+
+          expect do
+            validator.validate({ 'type' => 'select', 'table' => 'Kids', 'columns' => ['kind'] })
+          end.to raise_error(ArgumentError, /not permitted by policy/)
+          expect do
+            validator.validate({ 'type' => 'select', 'table' => 'kids', 'columns' => ['Kind'] })
+          end.to raise_error(ArgumentError, /not permitted/)
+        end
       end
 
       it 'uses case-insensitive MySQL policy table keys when enforcing columns' do

@@ -127,7 +127,8 @@ module CodeToQuery
       # Enforce table allowlist if provided (from user input)
       if Array(allow_tables).any?
         table = fetch_value(intent, :table)
-        if (table.to_s.strip != '') && !Array(allow_tables).map { |t| t.to_s.downcase }.include?(table.to_s.downcase)
+        if (table.to_s.strip != '') &&
+           Array(allow_tables).none? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, table) }
           raise ArgumentError, "Invalid intent: table '#{table}' not allowed"
         end
       end
@@ -269,7 +270,9 @@ module CodeToQuery
       return entry.last if entry
 
       return unless %i[postgres postgresql].include?(CodeToQuery.config.adapter.to_sym)
-      return unless allowed_columns.any? { |allowed_table, _columns| table.to_s.casecmp?(allowed_table) }
+      return unless allowed_columns.any? do |allowed_table, _columns|
+        IdentifierSemantics.ascii_case_insensitive?(table, allowed_table)
+      end
 
       # PostgreSQL quotes identifiers, so a case-only policy key names a
       # different table. Reject the near-match here rather than waiting for a
@@ -282,7 +285,7 @@ module CodeToQuery
         return allowed_columns.include?(column.to_s)
       end
 
-      allowed_columns.any? { |allowed| allowed.casecmp?(column.to_s) }
+      allowed_columns.any? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, column) }
     end
 
     def safe_call_policy_adapter(adapter, current_user, table:, intent:)
@@ -297,7 +300,9 @@ module CodeToQuery
     end
 
     def policy_table_allowed?(table, allowed)
-      return table.to_s.casecmp?(allowed.to_s) if %i[mysql sqlite].include?(CodeToQuery.config.adapter.to_sym)
+      if %i[mysql sqlite].include?(CodeToQuery.config.adapter.to_sym)
+        return IdentifierSemantics.ascii_case_insensitive?(table, allowed)
+      end
 
       table.to_s == allowed.to_s
     end

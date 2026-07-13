@@ -159,19 +159,20 @@ module CodeToQuery
 
       def policy_identifier_pattern(value, adapter, table:)
         escaped = Regexp.escape(value.to_s)
+        ascii_folded = IdentifierSemantics.ascii_case_insensitive_pattern(value)
         boundary = '[\\p{L}\\p{M}\\p{N}\\p{Pc}$]'
         exact_unquoted = "(?<!#{boundary})#{escaped}(?!#{boundary})"
-        folded_unquoted = "(?i:(?<!#{boundary})#{escaped}(?!#{boundary}))"
+        folded_unquoted = "(?<!#{boundary})#{ascii_folded}(?!#{boundary})"
 
         case adapter.to_sym
         when :postgres, :postgresql
           alternatives = ["\"#{escaped}\""]
-          alternatives << folded_unquoted if value.to_s == value.to_s.downcase
+          alternatives << folded_unquoted if value.to_s == IdentifierSemantics.ascii_fold(value)
         when :mysql
-          identifier = table ? escaped : "(?i:#{escaped})"
+          identifier = table ? escaped : ascii_folded
           alternatives = ["`#{identifier}`", table ? exact_unquoted : folded_unquoted]
         else # SQLite resolves quoted and unquoted identifiers case-insensitively.
-          alternatives = ["(?i:\"#{escaped}\")", "(?i:`#{escaped}`)", folded_unquoted]
+          alternatives = ["\"#{ascii_folded}\"", "`#{ascii_folded}`", folded_unquoted]
         end
         "(?:#{alternatives.join('|')})"
       end

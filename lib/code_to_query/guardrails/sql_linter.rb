@@ -220,7 +220,7 @@ module CodeToQuery
         # explicitly available to this legacy linter.
         return @allow_tables.include?(table.to_s) if @config.adapter.to_sym == :mysql
 
-        @allow_tables.any? { |allowed| allowed.casecmp?(table.to_s) }
+        @allow_tables.any? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, table) }
       end
 
       def check_no_literals!(sql)
