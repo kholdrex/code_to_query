@@ -78,6 +78,28 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         sql = 'SELECT * FROM "users" JOIN "admin_secrets" ON users.id = admin_secrets.user_id LIMIT 100'
         expect { linter.check!(sql) }.to raise_error(SecurityError, /not in the allowed list/)
       end
+
+      context 'with MySQL identifiers' do
+        let(:config) { stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2) }
+
+        it 'rejects an unquoted case mismatch' do
+          expect { linter.check!('SELECT * FROM USERS LIMIT 100') }
+            .to raise_error(SecurityError, /not in the allowed list/)
+        end
+
+        it 'rejects a quoted case mismatch' do
+          expect { linter.check!('SELECT * FROM `USERS` LIMIT 100') }
+            .to raise_error(SecurityError, /not in the allowed list/)
+        end
+
+        it 'allows an exact-case unquoted table' do
+          expect { linter.check!('SELECT * FROM users LIMIT 100') }.not_to raise_error
+        end
+
+        it 'allows an exact-case quoted table' do
+          expect { linter.check!('SELECT * FROM `users` LIMIT 100') }.not_to raise_error
+        end
+      end
     end
 
     context 'with JOIN complexity limits' do

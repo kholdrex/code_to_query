@@ -351,6 +351,36 @@ RSpec.describe CodeToQuery::Query do
       end
     end
 
+    it 'rejects a differently cased unquoted MySQL identifier from a lowercase allowlist' do
+      q = described_class.new(
+        sql: 'SELECT * FROM USERS LIMIT 100', params: {}, bind_spec: [],
+        intent: { 'table' => 'users', 'type' => 'select' }, allow_tables: ['users'],
+        config: stub_config(adapter: :mysql)
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'rejects a differently cased quoted MySQL identifier from a lowercase allowlist' do
+      q = described_class.new(
+        sql: 'SELECT * FROM `USERS` LIMIT 100', params: {}, bind_spec: [],
+        intent: { 'table' => 'users', 'type' => 'select' }, allow_tables: ['users'],
+        config: stub_config(adapter: :mysql)
+      )
+
+      expect(q.safe?).to be false
+    end
+
+    it 'accepts exact-case unquoted MySQL identifiers from the allowlist' do
+      q = described_class.new(
+        sql: 'SELECT * FROM AuditEvents LIMIT 100', params: {}, bind_spec: [],
+        intent: { 'table' => 'AuditEvents', 'type' => 'select' }, allow_tables: ['AuditEvents'],
+        config: stub_config(adapter: :mysql)
+      )
+
+      expect(q.safe?).to be true
+    end
+
     it 'accepts explicitly allowlisted quoted mixed-case identifiers on every adapter' do
       { postgres: '"AuditEvents"', sqlite: '"AuditEvents"', mysql: '`AuditEvents`' }.each do |adapter, table|
         q = described_class.new(

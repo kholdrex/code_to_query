@@ -5,8 +5,7 @@ module CodeToQuery
     class SqlLinter
       def initialize(config, allow_tables: nil)
         @config = config
-        # normalize allowlist to lowercase for case-insensitive comparison
-        @allow_tables = Array(allow_tables).compact.map { |t| t.to_s.downcase }
+        @allow_tables = Array(allow_tables).compact.map(&:to_s)
       end
 
       def check!(sql)
@@ -209,10 +208,19 @@ module CodeToQuery
         referenced_tables = extract_table_names(sql)
 
         referenced_tables.each do |table|
-          unless @allow_tables.include?(table.to_s.downcase)
+          unless table_allowed?(table)
             raise SecurityError, "Table '#{table}' is not in the allowed list: #{@allow_tables.join(', ')}"
           end
         end
+      end
+
+      def table_allowed?(table)
+        # MySQL table-name case semantics vary by lower_case_table_names and
+        # host filesystem. Fail closed with exact matching when they are not
+        # explicitly available to this legacy linter.
+        return @allow_tables.include?(table.to_s) if @config.adapter.to_sym == :mysql
+
+        @allow_tables.any? { |allowed| allowed.casecmp?(table.to_s) }
       end
 
       def check_no_literals!(sql)

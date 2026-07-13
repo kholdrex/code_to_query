@@ -491,6 +491,9 @@ module CodeToQuery
     # regard to case even when they are quoted.
     def table_identifier_allowed?(identifier, allowed)
       return identifier.name.casecmp?(allowed) if @config.adapter.to_sym == :sqlite
+      # MySQL table-name case semantics depend on lower_case_table_names and
+      # the host filesystem. Without server metadata, only exact case is safe.
+      return identifier.name == allowed if @config.adapter.to_sym == :mysql
       return identifier.name == allowed if identifier.quoted
 
       allowed == allowed.downcase && identifier.name.downcase == allowed
