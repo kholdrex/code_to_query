@@ -366,6 +366,22 @@ RSpec.describe CodeToQuery::Validator do
           end
         end
 
+        [
+          ['a wildcard SELECT', { 'columns' => ['*'] }],
+          ['an empty SELECT column list', { 'columns' => [] }],
+          [
+            'a columnless count aggregation',
+            { 'columns' => [], 'aggregations' => [{ 'type' => 'count' }] }
+          ]
+        ].each do |description, attributes|
+          it "fails closed for #{description} without relying on a column reference" do
+            intent = { 'type' => 'select', 'table' => 'users' }.merge(attributes)
+
+            expect { validator.validate(intent) }
+              .to raise_error(ArgumentError, /policy table key not permitted on 'users'/)
+          end
+        end
+
         {
           'selected column' => ->(intent) { intent['columns'] = ['id'] },
           'filter column' => lambda do |intent|
@@ -404,6 +420,22 @@ RSpec.describe CodeToQuery::Validator do
 
             expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'orders'/)
           end
+        end
+
+        it 'rejects a related-table key mismatch before checking its columns' do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'users' => ['id'], 'Orders' => [] } }
+          end
+          intent = {
+            'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+            'filters' => [{
+              'op' => 'exists', 'related_table' => 'orders',
+              'fk_column' => 'legacy_user_id', 'base_column' => 'id'
+            }]
+          }
+
+          expect { validator.validate(intent) }
+            .to raise_error(ArgumentError, /policy table key not permitted on 'orders'/)
         end
 
         it 'fails closed for a main-table base_column path' do
