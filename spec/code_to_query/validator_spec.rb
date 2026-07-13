@@ -277,6 +277,70 @@ RSpec.describe CodeToQuery::Validator do
       end
     end
 
+    context 'with adapter-specific policy column casing' do
+      let(:column_policy) do
+        {
+          allowed_tables: %w[users orders],
+          allowed_columns: {
+            'users' => %w[id UserCode],
+            'orders' => %w[user_id User_ID status StatusCode]
+          }
+        }
+      end
+      let(:related_intent) do
+        {
+          'type' => 'select', 'table' => 'users', 'columns' => ['UserCode'],
+          'filters' => [{
+            'op' => 'exists', 'related_table' => 'orders',
+            'fk_column' => 'user_id', 'base_column' => 'id',
+            'related_filters' => [{ 'column' => 'StatusCode', 'op' => '=', 'param' => 'status' }]
+          }]
+        }
+      end
+
+      before do
+        config.policy_adapter = ->(_user, **_kwargs) { column_policy }
+      end
+
+      it 'allows distinct exact-case PostgreSQL columns' do
+        expect { validator.validate(related_intent) }.not_to raise_error
+
+        mixed_case_fk = related_intent.dup
+        mixed_case_fk['filters'] = related_intent['filters'].map { |filter| filter.merge('fk_column' => 'User_ID') }
+        expect { validator.validate(mixed_case_fk) }.not_to raise_error
+      end
+
+      {
+        'selected column' => ->(intent) { intent['columns'] = ['usercode'] },
+        'main-table filter column' => lambda do |intent|
+          intent['filters'] = [{ 'column' => 'usercode', 'op' => '=', 'param' => 'code' }]
+        end,
+        'related fk_column' => ->(intent) { intent['filters'].first['fk_column'] = 'USER_ID' },
+        'main-table base_column' => ->(intent) { intent['filters'].first['base_column'] = 'ID' },
+        'related filter column' => ->(intent) { intent['filters'].first['related_filters'].first['column'] = 'statuscode' }
+      }.each do |path, change_case|
+        it "rejects a case-only PostgreSQL mismatch in the #{path}" do
+          intent = Marshal.load(Marshal.dump(related_intent))
+          change_case.call(intent)
+
+          expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted/)
+        end
+      end
+
+      %i[mysql sqlite].each do |adapter|
+        it "retains #{adapter} case-insensitive column semantics" do
+          config.adapter = adapter
+          intent = Marshal.load(Marshal.dump(related_intent))
+          intent['columns'] = ['usercode']
+          intent['filters'].first['fk_column'] = 'USER_ID'
+          intent['filters'].first['base_column'] = 'ID'
+          intent['filters'].first['related_filters'].first['column'] = 'statuscode'
+
+          expect { validator.validate(intent) }.not_to raise_error
+        end
+      end
+    end
+
     context 'with order clause' do
       it 'validates order clause' do
         intent = {
