@@ -582,8 +582,8 @@ module CodeToQuery
       return unless present
 
       value = policy_info.key?(:allowed_tables) ? policy_info[:allowed_tables] : policy_info['allowed_tables']
-      allowed_tables = Array(value).map { |table| table.to_s.downcase }.reject(&:empty?)
-      if required_table && !allowed_tables.include?(required_table.to_s.downcase)
+      allowed_tables = Array(value).map(&:to_s).reject(&:empty?)
+      if required_table && allowed_tables.none? { |allowed| policy_table_allowed?(required_table, allowed) }
         raise PolicyAdapterError, "Policy does not allow related table: #{required_table}"
       end
 
@@ -597,6 +597,12 @@ module CodeToQuery
       else
         intent['__policy_allowed_tables'] = allowed_tables
       end
+    end
+
+    def policy_table_allowed?(table, allowed)
+      return table.to_s.casecmp?(allowed.to_s) if @config.adapter.to_sym == :sqlite
+
+      table.to_s == allowed.to_s
     end
 
     def strip_untrusted_policy_expectations!(intent)

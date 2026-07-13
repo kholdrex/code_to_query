@@ -151,12 +151,12 @@ module CodeToQuery
 
       policy_has_allowed_tables = policy_info.key?(:allowed_tables) || policy_info.key?('allowed_tables')
       if policy_has_allowed_tables
-        allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map { |t| t.to_s.downcase }
+        allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map(&:to_s)
         intent[:__policy_allowed_tables] = allowed_tables
         intent['__policy_allowed_tables'] = allowed_tables
 
         table = fetch_value(intent, :table)
-        if (table.to_s.strip != '') && !allowed_tables.include?(table.to_s.downcase)
+        if (table.to_s.strip != '') && allowed_tables.none? { |allowed| policy_table_allowed?(table, allowed) }
           raise ArgumentError, "Invalid intent: table '#{table}' not permitted by policy"
         end
       end
@@ -273,6 +273,12 @@ module CodeToQuery
 
     def policy_signature_mismatch?(error)
       error.message.match?(/unknown keyword.*intent|wrong number of arguments|no keywords accepted/)
+    end
+
+    def policy_table_allowed?(table, allowed)
+      return table.to_s.casecmp?(allowed.to_s) if CodeToQuery.config.adapter.to_sym == :sqlite
+
+      table.to_s == allowed.to_s
     end
 
     def handle_policy_failure(message)
