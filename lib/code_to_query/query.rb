@@ -26,21 +26,13 @@ module CodeToQuery
 
     # Return mutable copies for backwards compatibility without exposing the
     # immutable state used by safety checks and execution.
-    def sql
-      deep_copy(@sql)
-    end
+    def sql = deep_copy(@sql)
 
-    def params
-      deep_copy(@params)
-    end
+    def params = deep_copy(@params)
 
-    def intent
-      deep_copy(@intent)
-    end
+    def intent = deep_copy(@intent)
 
-    def metrics
-      deep_copy(@metrics)
-    end
+    def metrics = deep_copy(@metrics)
 
     def binds
       return [] unless defined?(ActiveRecord::Base)
