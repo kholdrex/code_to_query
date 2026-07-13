@@ -331,13 +331,12 @@ module CodeToQuery
     def effective_lint_allow_tables
       explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
       policy_tables = Array(@intent['__policy_allowed_tables']).compact.map(&:to_s).uniq
-      normalized_explicit_tables = explicit_tables.map(&:downcase).uniq
-      normalized_policy_tables = policy_tables.map(&:downcase).uniq
-
       return @allow_tables unless policy_allowlist_present?
-      return normalized_policy_tables if explicit_tables.empty?
+      return policy_tables if explicit_tables.empty?
 
-      normalized_explicit_tables & normalized_policy_tables
+      explicit_tables.select do |table|
+        policy_tables.any? { |policy_table| allowlist_names_equivalent?(table, policy_table) }
+      end
     end
 
     def allowlist_sources_present?
@@ -359,7 +358,7 @@ module CodeToQuery
     end
 
     def check_top_level_table_allowlist!
-      allowed_tables = Array(effective_lint_allow_tables).compact.map { |table| table.to_s.downcase }
+      allowed_tables = Array(effective_lint_allow_tables).compact.map(&:to_s)
       return if allowed_tables.empty?
 
       top_level_sql = strip_exists_subqueries(@sql)
@@ -367,12 +366,10 @@ module CodeToQuery
       raise SecurityError, 'Top-level common table expressions are not allowed' if top_level_sql.match?(/\A\s*WITH\b/i)
       raise SecurityError, 'Top-level derived tables are not allowed' if top_level_sql.match?(/(?:\bFROM\b|\bJOIN\b|,)\s*(?:LATERAL\s+)?\(/i)
 
-      extract_table_names(top_level_sql).each do |table|
-        # Preserve quoted identifier case. Downcasing here would make a distinct
-        # PostgreSQL table such as "USERS" match an allowlisted `users` table.
-        next if allowed_tables.include?(table.to_s)
+      extract_table_identifiers(top_level_sql).each do |table|
+        next if allowed_tables.any? { |allowed| table_identifier_allowed?(table, allowed) }
 
-        raise SecurityError, "Table '#{table}' is not in the allowed list: #{allowed_tables.join(', ')}"
+        raise SecurityError, "Table '#{table.name}' is not in the allowed list: #{allowed_tables.join(', ')}"
       end
     end
 
@@ -380,17 +377,17 @@ module CodeToQuery
       policy_scoped_related_tables = declared_related_tables
       return unless allowlist_sources_present?
 
-      extract_table_names(strip_exists_subqueries(@sql)).each do |table|
-        next unless policy_scoped_related_tables.include?(table.to_s.downcase)
+      extract_table_identifiers(strip_exists_subqueries(@sql)).each do |table|
+        next unless policy_scoped_related_tables.any? { |allowed| table_identifier_allowed?(table, allowed) }
 
         raise SecurityError,
-              "Table '#{table}' is only allowed inside declared EXISTS/NOT EXISTS filters"
+              "Table '#{table.name}' is only allowed inside declared EXISTS/NOT EXISTS filters"
       end
 
       declared_references = Hash.new { |hash, key| hash[key] = [] }
       Array(@intent['filters']).each do |filter|
         operator = filter['op'].to_s.downcase
-        table = filter['related_table']&.to_s&.downcase
+        table = filter['related_table']&.to_s
         declared_references[[operator, table]] << filter if %w[exists not_exists].include?(operator) && table
       end
       policy_binds_by_declaration = policy_binds_by_related_filter
@@ -398,11 +395,11 @@ module CodeToQuery
       sql_references = Hash.new(0)
       subqueries = sql_scanner.exists_subqueries(@sql)
       subqueries.each do |subquery|
-        extract_table_names(strip_exists_subqueries(subquery[:sql])).each do |table|
-          normalized_table = table.to_s
-          unless policy_scoped_related_tables.include?(normalized_table)
+        extract_table_identifiers(strip_exists_subqueries(subquery[:sql])).each do |table|
+          normalized_table = policy_scoped_related_tables.find { |allowed| table_identifier_allowed?(table, allowed) }
+          unless normalized_table
             raise SecurityError,
-                  "Table '#{table}' has an undeclared #{subquery[:operator].upcase} reference"
+                  "Table '#{table.name}' has an undeclared #{subquery[:operator].upcase} reference"
           end
 
           reference = [subquery[:operator], normalized_table]
@@ -410,14 +407,14 @@ module CodeToQuery
           declaration = declared_references[reference][sql_references[reference] - 1]
           if declaration
             required_bind_numbers = policy_binds_by_declaration.fetch(declaration, [])
-            next if policy_bind_present_in_subquery?(subquery, required_bind_numbers, subqueries, table)
+            next if policy_bind_present_in_subquery?(subquery, required_bind_numbers, subqueries, table.name)
 
             raise SecurityError,
-                  "Table '#{table}' has an unscoped #{subquery[:operator].upcase} reference"
+                  "Table '#{table.name}' has an unscoped #{subquery[:operator].upcase} reference"
           end
 
           raise SecurityError,
-                "Table '#{table}' has an undeclared #{subquery[:operator].upcase} reference"
+                "Table '#{table.name}' has an undeclared #{subquery[:operator].upcase} reference"
         end
       end
     end
@@ -449,7 +446,7 @@ module CodeToQuery
     def policy_binds_by_related_filter
       declarations_by_table = Array(@intent['filters']).select do |filter|
         %w[exists not_exists].include?(filter['op'].to_s.downcase) && filter['related_table']
-      end.group_by { |filter| filter['related_table'].to_s.downcase }
+      end.group_by { |filter| filter['related_table'].to_s }
 
       declarations_by_table.each_with_object({}.compare_by_identity) do |(table, declarations), result|
         table_fragment = table.gsub(/[^a-zA-Z0-9_]/, '_')
@@ -472,7 +469,7 @@ module CodeToQuery
         op = filter['op'].to_s.downcase
         next unless %w[exists not_exists].include?(op)
 
-        filter['related_table']&.to_s&.downcase
+        filter['related_table']&.to_s
       end.compact.uniq
     end
 
@@ -482,6 +479,27 @@ module CodeToQuery
 
     def extract_table_names(sql)
       sql_scanner.extract_table_names(sql)
+    end
+
+    def extract_table_identifiers(sql)
+      sql_scanner.extract_table_identifiers(sql)
+    end
+
+    # Allowlist names are catalog identifiers. Lowercase names denote portable
+    # unquoted identifiers; mixed/uppercase names denote deliberately cased
+    # identifiers. SQLite is the exception: it resolves identifiers without
+    # regard to case even when they are quoted.
+    def table_identifier_allowed?(identifier, allowed)
+      return identifier.name.casecmp?(allowed) if @config.adapter.to_sym == :sqlite
+      return identifier.name == allowed if identifier.quoted
+
+      allowed == allowed.downcase && identifier.name.downcase == allowed
+    end
+
+    def allowlist_names_equivalent?(left, right)
+      return left.casecmp?(right) if @config.adapter.to_sym == :sqlite
+
+      left == right || (left == left.downcase && right == right.downcase && left.casecmp?(right))
     end
 
     def sql_scanner

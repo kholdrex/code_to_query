@@ -339,6 +339,53 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false
     end
 
+    it 'accepts uppercase unquoted PostgreSQL and SQLite identifiers from a lowercase allowlist' do
+      %i[postgres sqlite].each do |adapter|
+        q = described_class.new(
+          sql: 'SELECT * FROM USERS LIMIT 100', params: {}, bind_spec: [],
+          intent: { 'table' => 'users', 'type' => 'select' }, allow_tables: ['users'],
+          config: stub_config(adapter: adapter)
+        )
+
+        expect(q.safe?).to be(true), "expected #{adapter} unquoted identifier folding to be honored"
+      end
+    end
+
+    it 'accepts explicitly allowlisted quoted mixed-case identifiers on every adapter' do
+      { postgres: '"AuditEvents"', sqlite: '"AuditEvents"', mysql: '`AuditEvents`' }.each do |adapter, table|
+        q = described_class.new(
+          sql: "SELECT * FROM #{table} LIMIT 100", params: {}, bind_spec: [],
+          intent: { 'table' => 'AuditEvents', 'type' => 'select' }, allow_tables: ['AuditEvents'],
+          config: stub_config(adapter: adapter)
+        )
+
+        expect(q.safe?).to be(true), "expected quoted #{adapter} identifier case to be preserved"
+      end
+    end
+
+    it 'uses SQLite case-insensitive semantics for quoted identifiers' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "AUDITEVENTS" LIMIT 100', params: {}, bind_spec: [],
+        intent: { 'table' => 'AuditEvents', 'type' => 'select' }, allow_tables: ['AuditEvents'],
+        config: stub_config(adapter: :sqlite)
+      )
+
+      expect(q.safe?).to be true
+    end
+
+    it 'accepts uppercase unquoted related tables in PostgreSQL EXISTS filters' do
+      q = described_class.new(
+        sql: 'SELECT * FROM QUESTIONS WHERE EXISTS (SELECT 1 FROM ANSWERS)', params: {}, bind_spec: [],
+        intent: {
+          'table' => 'questions', 'type' => 'select',
+          'filters' => [{ 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers' }]
+        },
+        allow_tables: %w[questions answers], config: config
+      )
+
+      expect(q.safe?).to be true
+    end
+
     it 'rejects an undeclared EXISTS table even when the top-level allowlist permits it' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers")',

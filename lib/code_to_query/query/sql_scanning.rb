@@ -5,6 +5,7 @@ module CodeToQuery
     # Internal SQL scanning helpers used to enforce table allowlists while
     # preserving quoted literals, identifiers, and comment boundaries.
     class SqlScanner
+      TableIdentifier = Struct.new(:name, :quoted, keyword_init: true)
       def strip_exists_subqueries(sql)
         source = sql.to_s
         searchable = mask_sql_literals_comments_and_identifier_contents(source)
@@ -308,6 +309,10 @@ module CodeToQuery
       public
 
       def extract_table_names(sql)
+        extract_table_identifiers(sql).map(&:name).uniq
+      end
+
+      def extract_table_identifiers(sql)
         source = sql.to_s
         searchable = mask_sql_literals_comments_and_identifier_contents(source)
         tables = []
@@ -319,7 +324,7 @@ module CodeToQuery
           commas = masked_clause.to_enum(:scan, /,/).map { Regexp.last_match.begin(0) }
           [-1, *commas, clause.length].each_cons(2) do |left, right|
             reference = clause[(left + 1)...right]
-            table_name = extract_table_reference_name(reference)
+            table_name = extract_table_reference_identifier(reference)
             raise SecurityError, "Unsupported FROM reference: #{reference.to_s.strip}" unless table_name
 
             tables << table_name
@@ -329,13 +334,13 @@ module CodeToQuery
         searchable.to_enum(:scan, /#{join_clause_pattern}\s*(.+?)(?=\bON\b|\bUSING\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im).each do
           match = Regexp.last_match
           reference = source[match.begin(1)...match.end(1)]
-          table_name = extract_table_reference_name(reference)
+          table_name = extract_table_reference_identifier(reference)
           raise SecurityError, "Unsupported JOIN reference: #{reference.to_s.strip}" unless table_name
 
           tables << table_name
         end
 
-        tables.uniq
+        tables.uniq { |identifier| [identifier.name, identifier.quoted] }
       end
 
       private
@@ -367,13 +372,15 @@ module CodeToQuery
         /\b(?:INNER\s+|(?:LEFT|RIGHT|FULL)(?:\s+OUTER)?\s+|CROSS\s+|NATURAL\s+(?:(?:LEFT|RIGHT|FULL)(?:\s+OUTER)?\s+)?)?JOIN\b/i
       end
 
-      def extract_table_reference_name(reference)
+      def extract_table_reference_identifier(reference)
         alias_identifier = '(?:`[^`]+`|"[^"]+"|\'[^\']+\'|[a-zA-Z_][a-zA-Z0-9_]*)'
         table_reference_pattern = /\A(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
 
         match = reference.to_s.strip.match(table_reference_pattern)
-        captures = match&.captures
-        captures&.compact&.first
+        return unless match
+
+        quoted_name = match.captures[0..2].compact.first
+        TableIdentifier.new(name: quoted_name || match[4], quoted: !quoted_name.nil?)
       end
     end
   end
