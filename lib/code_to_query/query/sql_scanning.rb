@@ -6,6 +6,23 @@ module CodeToQuery
     # preserving quoted literals, identifiers, and comment boundaries.
     class SqlScanner
       TableIdentifier = Struct.new(:name, :quoted, keyword_init: true)
+
+      # PostgreSQL keywords that cannot be used as an unquoted relation name.
+      # Keeping this distinction in the scanner matters because words such as
+      # IS after `(table` are expression grammar, not the relation operand of a
+      # TABLE query expression. Quoted words remain valid relation names.
+      POSTGRES_RESERVED_KEYWORDS = %w[
+        ALL ANALYSE ANALYZE AND ANY ARRAY AS ASC ASYMMETRIC BOTH CASE CAST CHECK
+        COLLATE COLUMN CONSTRAINT CREATE CURRENT_CATALOG CURRENT_DATE CURRENT_ROLE
+        CURRENT_TIME CURRENT_TIMESTAMP CURRENT_USER DEFAULT DEFERRABLE DESC DISTINCT
+        DO ELSE END EXCEPT FALSE FETCH FOR FOREIGN FREEZE FROM FULL GRANT GROUP
+        HAVING ILIKE IN INITIALLY INNER INTERSECT INTO IS ISNULL JOIN LATERAL LEADING
+        LEFT LIKE LIMIT LOCALTIME LOCALTIMESTAMP NATURAL NOT NOTNULL NULL NULLS OFFSET
+        ON ONLY OR ORDER OUTER OVERLAPS PLACING PRIMARY REFERENCES RETURNING RIGHT
+        SELECT SESSION_USER SIMILAR SOME SYMMETRIC TABLE THEN TO TRAILING TRUE UNION
+        UNIQUE USER USING VARIADIC VERBOSE WHEN WHERE WINDOW WITH
+      ].freeze
+
       def strip_exists_subqueries(sql)
         source = sql.to_s
         searchable = mask_sql_literals_comments_and_identifier_contents(source)
@@ -58,6 +75,22 @@ module CodeToQuery
             ordinal += 1
             [Regexp.last_match.begin(0), ordinal]
           end
+        end
+      end
+
+      # PostgreSQL's TABLE relation query is a SELECT-equivalent and can occur
+      # wherever a query operand is accepted. Tokenize code (with literals,
+      # comments, and quoted identifier contents masked) so PostgreSQL's broad
+      # unquoted identifier syntax is handled without mistaking TABLE inside
+      # data or identifiers.
+      def table_query_expression?(sql)
+        tokens = sql_tokens(sql.to_s)
+        tokens.each_with_index.any? do |token, index|
+          next false unless keyword_token?(token, 'TABLE')
+          next false unless query_operand_boundary?(tokens, index)
+
+          relation_finish = table_relation_operand_finish(tokens, index + 1)
+          relation_finish && table_query_continuation?(tokens[relation_finish])
         end
       end
 
@@ -117,6 +150,165 @@ module CodeToQuery
       end
 
       private
+
+      def sql_tokens(source)
+        searchable = mask_sql_literals_comments_and_identifier_contents(source)
+        tokens = []
+        index = 0
+        while index < searchable.length
+          if searchable[index].match?(/\s/)
+            index += 1
+          elsif postgres_unicode_quoted_identifier_start?(searchable, index)
+            finish = quoted_identifier_finish(source, index + 2)
+            tokens << {
+              type: :identifier, value: source[index...finish], quoted: true, unicode_quoted: true
+            }
+            index = finish
+          elsif searchable[index] == '"'
+            finish = quoted_identifier_finish(source, index)
+            tokens << { type: :identifier, value: source[index...finish], quoted: true }
+            index = finish
+          elsif postgres_identifier_start?(searchable[index])
+            finish = index + 1
+            finish += 1 while postgres_identifier_continuation?(searchable[finish])
+            tokens << { type: :identifier, value: searchable[index...finish] }
+            index = finish
+          else
+            tokens << { type: :symbol, value: searchable[index] }
+            index += 1
+          end
+        end
+        tokens
+      end
+
+      def quoted_identifier_finish(source, index)
+        index += 1
+        while index < source.length
+          if source[index] == '"' && source[index + 1] == '"'
+            index += 2
+          elsif source[index] == '"'
+            return index + 1
+          else
+            index += 1
+          end
+        end
+        source.length
+      end
+
+      # PostgreSQL lexes U&"..." (with no whitespace around the ampersand) as
+      # one Unicode-escaped delimited identifier. Treating U, &, and the quoted
+      # portion as separate tokens would miss a valid TABLE relation operand.
+      def postgres_unicode_quoted_identifier_start?(searchable, index)
+        searchable[index]&.casecmp?('U') && searchable[index + 1] == '&' && searchable[index + 2] == '"'
+      end
+
+      # PostgreSQL's lexer permits any non-ASCII character in an unquoted
+      # identifier, including characters Unicode classifies as symbols. Avoid
+      # a Unicode letter/category allowlist here: it would miss executable
+      # relation names such as an emoji.
+      def postgres_identifier_start?(character)
+        return false unless character
+
+        !character.ascii_only? || character == '_' || character.match?(/[A-Za-z]/)
+      end
+
+      def postgres_identifier_continuation?(character)
+        postgres_identifier_start?(character) || character&.match?(/[0-9$]/)
+      end
+
+      def keyword_token?(token, keyword)
+        token && token[:type] == :identifier && token[:value].casecmp?(keyword)
+      end
+
+      def postgres_relation_identifier_token?(token)
+        return false unless token&.fetch(:type, nil) == :identifier
+        return true if token[:quoted]
+
+        POSTGRES_RESERVED_KEYWORDS.none? { |keyword| token[:value].casecmp?(keyword) }
+      end
+
+      def postgres_relation_identifier_finish(tokens, index)
+        token = tokens[index]
+        return unless postgres_relation_identifier_token?(token)
+
+        index += 1
+        # PostgreSQL permits an optional UESCAPE string after each U& quoted
+        # identifier. String literal contents are deliberately absent from the
+        # token stream, so consuming UESCAPE here reaches the next SQL token.
+        index += 1 if token[:unicode_quoted] && keyword_token?(tokens[index], 'UESCAPE')
+        index
+      end
+
+      # Parse TABLE's complete relation operand before deciding whether TABLE
+      # starts a query expression. At an operand boundary, `(table IS NULL)`
+      # and `(TABLE accounts)` initially look alike; the token after the
+      # relation is what distinguishes expression grammar from query grammar.
+      def table_relation_operand_finish(tokens, index)
+        index += 1 if keyword_token?(tokens[index], 'ONLY')
+        parenthesized = tokens[index]&.fetch(:value, nil) == '('
+        index += 1 if parenthesized
+        index = postgres_relation_identifier_finish(tokens, index)
+        return unless index
+
+        while tokens[index]&.fetch(:value, nil) == '.'
+          index = postgres_relation_identifier_finish(tokens, index + 1)
+          return unless index
+        end
+        if parenthesized
+          return unless tokens[index]&.fetch(:value, nil) == ')'
+
+          index += 1
+        end
+        index += 1 if tokens[index]&.fetch(:value, nil) == '*'
+        index
+      end
+
+      def table_query_continuation?(token)
+        return true unless token
+        return true if token[:value] == ')'
+
+        %w[UNION INTERSECT EXCEPT ORDER LIMIT OFFSET FETCH FOR].any? do |keyword|
+          keyword_token?(token, keyword)
+        end
+      end
+
+      def query_operand_boundary?(tokens, index)
+        return true if index.zero?
+
+        previous = tokens[index - 1]
+        return true if previous&.fetch(:value, nil) == '('
+        return true if %w[UNION INTERSECT EXCEPT].any? { |keyword| keyword_token?(previous, keyword) }
+        return true if cte_query_operand_boundary?(tokens, index)
+        return false unless %w[ALL DISTINCT].any? { |keyword| keyword_token?(previous, keyword) }
+
+        %w[UNION INTERSECT EXCEPT].any? { |keyword| keyword_token?(tokens[index - 2], keyword) }
+      end
+
+      # At the outer level of a WITH operand, CTE definitions end in a closing
+      # parenthesis immediately before the main SELECT/TABLE/VALUES expression.
+      # Walk back over those balanced definitions to distinguish that position
+      # from an ordinary identifier or alias named `table`.
+      def cte_query_operand_boundary?(tokens, index)
+        depth = 0
+        cursor = index - 1
+        while cursor >= 0
+          token = tokens[cursor]
+          value = token[:value]
+          if value == ')'
+            depth += 1
+          elsif value == '('
+            return false if depth.zero?
+
+            depth -= 1
+          elsif depth.zero?
+            return query_operand_boundary?(tokens, cursor) if keyword_token?(token, 'WITH')
+            return false if %w[SELECT VALUES TABLE].any? { |keyword| keyword_token?(token, keyword) }
+            return false if value == ';'
+          end
+          cursor -= 1
+        end
+        false
+      end
 
       def top_level_where_body(searchable)
         structure = mask_sql_literals_comments_and_identifier_contents(searchable)

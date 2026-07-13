@@ -52,6 +52,78 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
     end
   end
 
+  describe '#table_query_expression?' do
+    it 'does not mistake an ordinary table identifier in an expression for a TABLE query' do
+      expect(scanner.table_query_expression?('SELECT (table IS NULL) FROM users LIMIT 1')).to be false
+      expect(scanner.table_query_expression?('SELECT (table = $1) FROM users LIMIT 1')).to be false
+      expect(scanner.table_query_expression?('SELECT (table NOT IN ($1)), table.id FROM users AS table LIMIT 1')).to be false
+      expect(scanner.table_query_expression?('SELECT table($1) FROM users LIMIT 1')).to be false
+    end
+
+    it 'uses the relation operand boundary to reject expression operators' do
+      expressions = [
+        'table BETWEEN $1 AND $2',
+        'table AT TIME ZONE $1',
+        'table IS DISTINCT FROM $1',
+        'table = $1',
+        'table <> $1',
+        'table IN ($1)',
+        'table NOT IN ($1)',
+        'table + $1',
+        'table::text'
+      ]
+
+      expressions.each do |expression|
+        expect(scanner.table_query_expression?("SELECT (#{expression}) FROM users LIMIT 1")).to be(false), expression
+      end
+    end
+
+    it 'still recognizes relation identifiers in TABLE query expressions' do
+      expect(scanner.table_query_expression?('SELECT EXISTS (TABLE "IS")')).to be true
+      expect(scanner.table_query_expression?('SELECT EXISTS (TABLE /* gap */ ONLY (💣))')).to be true
+      expect(scanner.table_query_expression?('SELECT EXISTS (WITH q AS (SELECT 1) TABLE évil)')).to be true
+      expect(scanner.table_query_expression?('SELECT EXISTS (SELECT 1 UNION ALL TABLE schema_name.relation_name)')).to be true
+    end
+
+    it 'recognizes PostgreSQL Unicode-escaped quoted relation identifiers' do
+      expressions = [
+        'SELECT EXISTS (TABLE U&"secrets") LIMIT 1',
+        %q(SELECT EXISTS (TABLE U&"s\0065crets") LIMIT 1),
+        %q(SELECT EXISTS (TABLE U&"schema".U&"secr""ets") LIMIT 1),
+        %q(SELECT EXISTS (TABLE U&"s!0065crets" UESCAPE '!') LIMIT 1)
+      ]
+
+      expressions.each do |expression|
+        expect(scanner.table_query_expression?(expression)).to be(true), expression
+      end
+    end
+
+    it 'does not combine spaced U, ampersand, and quoted identifier tokens' do
+      expect(scanner.table_query_expression?('SELECT (table U & "secrets") FROM users LIMIT 1')).to be false
+      expect(scanner.table_query_expression?('SELECT (table U& "secrets") FROM users LIMIT 1')).to be false
+    end
+
+    it 'recognizes valid TABLE relation completion and query-level continuation' do
+      expressions = [
+        'TABLE accounts',
+        'TABLE ONLY (archive.accounts) *',
+        '(TABLE accounts)',
+        'TABLE accounts UNION SELECT * FROM users',
+        'TABLE accounts INTERSECT ALL TABLE active_accounts',
+        'TABLE accounts EXCEPT TABLE archived_accounts',
+        'TABLE accounts ORDER BY id',
+        'TABLE accounts LIMIT 1',
+        'TABLE accounts OFFSET 1',
+        'TABLE accounts FETCH FIRST 1 ROW ONLY',
+        'TABLE accounts FOR UPDATE'
+      ]
+
+      expressions.each do |expression|
+        expect(scanner.table_query_expression?(expression)).to be(true), expression
+      end
+    end
+  end
+
   describe '#policy_predicate_bind_numbers' do
     it 'derives SQLite and MySQL question-mark bind identity from the global SQL position' do
       full_sql = 'SELECT ? FROM questions WHERE EXISTS ' \

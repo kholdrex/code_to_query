@@ -17,6 +17,24 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         sql = 'SELECT * FROM "users" WHERE "active" = $1 LIMIT 50'
         expect { linter.check!(sql) }.not_to raise_error
       end
+
+      it 'passes an ordinary table identifier inside a parenthesized expression' do
+        sql = 'SELECT (table IS NULL) FROM users LIMIT 1'
+
+        expect { linter.check!(sql) }.not_to raise_error
+      end
+
+      it 'passes BETWEEN on an ordinary table identifier' do
+        sql = 'SELECT (table BETWEEN $1 AND $2) FROM users LIMIT 1'
+
+        expect { linter.check!(sql) }.not_to raise_error
+      end
+
+      it 'passes AT TIME ZONE on an ordinary table identifier' do
+        sql = 'SELECT (table AT TIME ZONE $1) FROM users LIMIT 1'
+
+        expect { linter.check!(sql) }.not_to raise_error
+      end
     end
 
     context 'with dangerous queries' do
@@ -89,6 +107,56 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         sql = 'SELECT * FROM "users" WHERE EXISTS (SELECT * FROM "users" UNION TABLE "admin_secrets") LIMIT 10'
 
         expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects TABLE query expressions with Unicode PostgreSQL identifiers' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (TABLE évil) LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects TABLE query expressions with PostgreSQL Unicode-escaped quoted identifiers' do
+        expressions = [
+          'SELECT EXISTS (TABLE U&"secrets") LIMIT 1',
+          %q(SELECT EXISTS (TABLE U&"s\0065crets") LIMIT 1),
+          %q(SELECT EXISTS (TABLE U&"secr""ets") LIMIT 1)
+        ]
+
+        expressions.each do |sql|
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /TABLE query expressions are not supported/), sql
+        end
+      end
+
+      it 'rejects nested TABLE ONLY expressions across comments and whitespace' do
+        sql = "SELECT * FROM \"users\" WHERE EXISTS ((TABLE /* gap */ ONLY\n(évil))) LIMIT 10"
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects a TABLE query expression after a CTE definition' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (WITH q AS (SELECT 1) /* gap */ TABLE évil) LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects a TABLE query expression with an emoji PostgreSQL identifier' do
+        sql = 'SELECT EXISTS (WITH q AS (SELECT 1) TABLE 💣) LIMIT 1'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'does not treat table in identifiers, strings, or comments as a TABLE query expression' do
+        scanner = CodeToQuery::Query::SqlScanner.new
+
+        expect(scanner.table_query_expression?('SELECT table FROM users')).to be false
+        expect(scanner.table_query_expression?('SELECT table.id FROM users AS table')).to be false
+        expect(scanner.table_query_expression?('SELECT users.table FROM users')).to be false
+        expect(scanner.table_query_expression?('SELECT 1 AS table FROM users')).to be false
+        expect(scanner.table_query_expression?('WITH q AS (SELECT 1) SELECT table FROM q AS table')).to be false
+        expect(scanner.table_query_expression?('SELECT "table" FROM users')).to be false
+        expect(scanner.table_query_expression?("SELECT 'TABLE évil' FROM users")).to be false
+        expect(scanner.table_query_expression?('SELECT 1 /* TABLE évil */ FROM users')).to be false
       end
 
       context 'with MySQL identifiers' do

@@ -223,8 +223,7 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
     context 'with malformed SQL' do
       it 'handles missing closing quotes' do
         sql = "SELECT * FROM users WHERE name = 'unclosed LIMIT 10"
-        # This should not crash the linter
-        expect { linter.check!(sql) }.not_to raise_error
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /Unterminated SQL literal/)
       end
 
       it 'handles unbalanced parentheses' do

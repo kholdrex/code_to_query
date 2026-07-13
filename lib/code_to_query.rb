@@ -112,7 +112,9 @@ module CodeToQuery
       policy_applied: false
     }
     compiled = Instrumentation.instrument(:compile, compile_payload) do
-      compile_result = Compiler.new(config).compile(validated_intent, current_user: current_user)
+      compile_result = Compiler.new(config).compile(
+        validated_intent, current_user: current_user, allow_tables: allow_tables
+      )
       compile_payload[:policy_applied] = policy_applied_from_bind_spec?(compile_result[:bind_spec])
       compile_result
     end

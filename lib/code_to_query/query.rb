@@ -351,7 +351,8 @@ module CodeToQuery
       return true unless @config.policy_adapter
 
       expected_keys = expected_policy_keys
-      return compiler_policy_contract?(expected_keys) if expected_keys.empty?
+      return false unless compiler_policy_contract?
+      return true if expected_keys.empty?
 
       bind_keys = Array(@bind_spec).filter_map { |bind| bind[:key]&.to_s }
       param_keys = @params.keys.map(&:to_s)
@@ -367,10 +368,12 @@ module CodeToQuery
       end
     end
 
-    def compiler_policy_contract?(expected_keys)
-      @policy_contract.is_a?(Compiler::PolicyContract) &&
-        @policy_contract.adapter.equal?(@config.policy_adapter) &&
-        @policy_contract.expected_keys == expected_keys
+    def compiler_policy_contract?
+      Compiler.send(
+        :valid_policy_contract?, @policy_contract,
+        sql: @sql, params: @params, bind_spec: @bind_spec, intent: @intent,
+        allow_tables: @allow_tables, config: @config
+      )
     end
 
     def policy_predicates_expected?

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'weakref'
 
 RSpec.describe CodeToQuery::Query do
   let(:config) { stub_config(adapter: :postgres) }
@@ -97,6 +98,19 @@ RSpec.describe CodeToQuery::Query do
       },
       allow_tables: ['questions'],
       config: config
+    )
+  end
+
+  def build_compiled_policy_query(config, policy)
+    config.policy_adapter = ->(_user, **) { policy }
+    compiled = CodeToQuery::Compiler.new(config).compile(
+      { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+      allow_tables: ['users']
+    )
+    described_class.new(
+      sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+      intent: compiled[:intent], allow_tables: ['users'], config: config,
+      policy_contract: compiled[:policy_contract]
     )
   end
 
@@ -374,7 +388,8 @@ RSpec.describe CodeToQuery::Query do
     it 'returns true for a compiler-verified allowlist-only policy with no injected predicates' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
       compiled = CodeToQuery::Compiler.new(config).compile(
-        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 }
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
       )
       q = described_class.new(
         sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
@@ -387,6 +402,141 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'requires opaque compiler evidence for nonempty policy keys' do
+      config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
+      q = described_class.new(
+        sql: 'SELECT * FROM "users" WHERE "users"."tenant_id" = $1 LIMIT 100',
+        params: { 'policy_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'users', 'type' => 'select',
+          '__policy_expected_keys' => ['policy_tenant_id']
+        },
+        allow_tables: ['users'], config: config
+      )
+
+      expect(q.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'accepts a compiler-produced nonempty policy contract' do
+      config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
+      )
+      q = described_class.new(
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], config: config,
+        policy_contract: compiled[:policy_contract]
+      )
+
+      expect(q.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'keeps nonempty policy evidence alive while the query is alive across forced GC' do
+      q = build_compiled_policy_query(config, enforced_predicates: { tenant_id: 42 })
+
+      GC.start(full_mark: true, immediate_sweep: true)
+
+      expect(q.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'keeps allowlist-only policy evidence alive while the query is alive across forced GC' do
+      q = build_compiled_policy_query(config, allowed_tables: ['users'], enforced_predicates: {})
+
+      GC.start(full_mark: true, immediate_sweep: true)
+
+      expect(q.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'retains adapter identity for the contract lifetime and rejects a replacement after GC churn' do
+      issuing_adapter_ref = WeakRef.new(
+        config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+      )
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
+      )
+      attributes = {
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], config: config,
+        policy_contract: compiled[:policy_contract]
+      }
+
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+      50_000.times { Object.new }
+      GC.start(full_mark: true, immediate_sweep: true)
+
+      expect(issuing_adapter_ref).to be_weakref_alive
+      expect(described_class.new(**attributes).safe?).to be false
+
+      config.policy_adapter = issuing_adapter_ref.__getobj__
+      expect(described_class.new(**attributes).safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'rejects forged and replayed policy capabilities' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
+      )
+      attributes = {
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], config: config
+      }
+      forged = described_class.new(**attributes, policy_contract: Object.new)
+      replayed = described_class.new(
+        **attributes, sql: "#{compiled[:sql]} ", policy_contract: compiled[:policy_contract]
+      )
+
+      expect(forged.safe?).to be false
+      expect(replayed.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'binds policy evidence to params, intent, and explicit allowlists' do
+      config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
+      )
+      attributes = {
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], config: config,
+        policy_contract: compiled[:policy_contract]
+      }
+      changed_params = described_class.new(
+        **attributes, params: compiled[:params].merge('policy_tenant_id' => 7)
+      )
+      changed_binds = described_class.new(
+        **attributes, bind_spec: compiled[:bind_spec].map { |bind| bind.merge(cast: :tampered) }
+      )
+      changed_intent = described_class.new(**attributes, intent: compiled[:intent].merge('limit' => 99))
+      changed_allowlist = described_class.new(**attributes, allow_tables: %w[users admins])
+
+      expect(changed_params.safe?).to be false
+      expect(changed_binds.safe?).to be false
+      expect(changed_intent.safe?).to be false
+      expect(changed_allowlist.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'does not expose a publicly constructible policy contract class' do
+      expect { CodeToQuery::Compiler::PolicyContract }.to raise_error(NameError)
+    end
+
     it 'fails closed when a directly constructed query has no compiler policy contract' do
       config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
 
@@ -397,7 +547,8 @@ RSpec.describe CodeToQuery::Query do
 
     it 'fails closed when policy enforcement is enabled after compilation' do
       compiled = CodeToQuery::Compiler.new(config).compile(
-        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 }
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
       )
       config.policy_adapter = ->(_user, **) { { enforced_predicates: { tenant_id: 42 } } }
       q = described_class.new(
@@ -548,7 +699,7 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
-    it 'returns true when expected subquery policy keys are present in binds' do
+    it 'rejects synthetic subquery policy metadata even when binds are present' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
 
       q = described_class.new(
@@ -574,9 +725,7 @@ RSpec.describe CodeToQuery::Query do
         config: config
       )
 
-      allow(q).to receive(:perform_safety_checks).and_call_original
-
-      expect(q.safe?).to be true
+      expect(q.safe?).to be false
     ensure
       config.policy_adapter = nil
     end
@@ -607,42 +756,26 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
-    it 'accepts compiler-shaped main-table policy predicates with trailing clauses' do
-      config.policy_adapter = ->(_user, **) { { allowed_tables: ['questions'] } }
-      q = described_class.new(
-        sql: 'SELECT * FROM "questions" WHERE "questions"."tenant_id" = $1 ORDER BY "questions"."id" LIMIT 10',
-        params: { 'policy_tenant_id' => 42 },
-        bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
-        intent: {
-          'table' => 'questions', 'type' => 'select',
-          '__policy_expected_keys' => ['policy_tenant_id']
-        },
-        allow_tables: ['questions'], config: config
-      )
+    it 'recognizes compiler-shaped main-table policy predicates with trailing clauses' do
+      scanner = CodeToQuery::Query::SqlScanner.new
+      sql = 'SELECT * FROM "questions" WHERE "questions"."tenant_id" = $1 ORDER BY "questions"."id" LIMIT 10'
 
-      expect(q.safe?).to be true
-    ensure
-      config.policy_adapter = nil
+      expect(scanner.policy_predicate_bind?(sql, 'questions', 'tenant_id', 1, adapter: :postgres)).to be true
     end
 
-    it 'uses adapter identifier casing semantics for policy predicates' do
-      policy_adapter = ->(_user, **) { { allowed_tables: ['questions'] } }
+    it 'uses adapter identifier casing semantics while scanning policy predicates' do
       cases = {
         postgres: 'QUESTIONS.TENANT_ID',
         sqlite: '"QUESTIONS"."TENANT_ID"',
         mysql: '`questions`.`TENANT_ID`'
       }
+      scanner = CodeToQuery::Query::SqlScanner.new
 
       cases.each do |adapter, qualified_column|
-        q = described_class.new(
-          sql: "SELECT * FROM questions WHERE #{qualified_column} = $1 LIMIT 10",
-          params: { 'policy_tenant_id' => 42 },
-          bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
-          intent: { 'table' => 'questions', 'type' => 'select', '__policy_expected_keys' => ['policy_tenant_id'] },
-          allow_tables: ['questions'], config: stub_config(adapter: adapter, policy_adapter: policy_adapter)
-        )
+        sql = "SELECT * FROM questions WHERE #{qualified_column} = $1 LIMIT 10"
 
-        expect(q.safe?).to be(true), "expected #{adapter} casing semantics to be honored"
+        expect(scanner.policy_predicate_bind?(sql, 'questions', 'tenant_id', 1, adapter: adapter))
+          .to be(true), "expected #{adapter} casing semantics to be honored"
       end
     end
 

@@ -11,13 +11,28 @@ end
 module CodeToQuery
   # rubocop:disable Metrics/ClassLength
   class Compiler
-    PolicyContract = Struct.new(:adapter, :expected_keys, keyword_init: true)
+    # Policy evidence is an opaque capability. Its constructor and immutable
+    # snapshot are private, so caller-supplied metadata can never stand in for
+    # a successful policy compilation. The issuing adapter is retained by
+    # reference so its identity cannot be recycled while the capability lives.
+    class PolicyContract
+      def initialize(snapshot, policy_adapter)
+        @snapshot = snapshot
+        @policy_adapter = policy_adapter
+        freeze
+      end
+
+      attr_reader :snapshot, :policy_adapter
+      private :snapshot, :policy_adapter
+      private_class_method :new
+    end
+    private_constant :PolicyContract
 
     def initialize(config)
       @config = config
     end
 
-    def compile(intent, current_user: nil)
+    def compile(intent, current_user: nil, allow_tables: nil)
       working_intent = deep_dup_value(intent)
       strip_untrusted_policy_expectations!(working_intent)
       intent_with_policy = apply_policy_predicates(working_intent, current_user)
@@ -27,8 +42,62 @@ module CodeToQuery
                  compile_with_string_building(intent_with_policy, current_user)
                end
       verify_compiled_policy_binds!(result)
-      result[:policy_contract] = build_policy_contract(result) if @config.policy_adapter.respond_to?(:call)
+      result[:policy_contract] = build_policy_contract(result, allow_tables) if @config.policy_adapter.respond_to?(:call)
       result
+    end
+
+    class << self
+      private
+
+      def valid_policy_contract?(contract, sql:, params:, bind_spec:, intent:, allow_tables:, config:)
+        return false unless contract.instance_of?(PolicyContract)
+        return false unless contract.send(:policy_adapter).equal?(config.policy_adapter)
+
+        contract.send(:snapshot) == policy_contract_snapshot(
+          sql: sql, params: params, bind_spec: bind_spec, intent: intent,
+          allow_tables: allow_tables, config: config
+        )
+      end
+
+      def issue_policy_contract(result, allow_tables, config)
+        policy_adapter = config.policy_adapter
+        snapshot = policy_contract_snapshot(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: allow_tables, config: config
+        )
+        PolicyContract.send(:new, snapshot, policy_adapter)
+      end
+
+      def policy_contract_snapshot(sql:, params:, bind_spec:, intent:, allow_tables:, config:)
+        deep_freeze_contract_value(
+          sql: sql,
+          params: params,
+          bind_spec: bind_spec,
+          intent: intent,
+          allow_tables: allow_tables,
+          config_identity: config.__id__,
+          adapter: config.adapter,
+          policy_adapter_fail_open: config.respond_to?(:policy_adapter_fail_open) && config.policy_adapter_fail_open
+        )
+      end
+
+      def deep_freeze_contract_value(value)
+        copy = case value
+               when Hash
+                 value.each_with_object({}) do |(key, item), result|
+                   result[deep_freeze_contract_value(key)] = deep_freeze_contract_value(item)
+                 end
+               when Array
+                 value.map { |item| deep_freeze_contract_value(item) }
+               when Symbol, Numeric, true, false, nil
+                 value
+               else
+                 value.dup
+               end
+        copy.freeze
+      rescue TypeError
+        value
+      end
     end
 
     private
@@ -611,11 +680,8 @@ module CodeToQuery
       raise PolicyAdapterError, "Compiled policy binds are missing: #{missing.join(', ')}"
     end
 
-    def build_policy_contract(result)
-      PolicyContract.new(
-        adapter: @config.policy_adapter,
-        expected_keys: Array(result.dig(:intent, '__policy_expected_keys')).map(&:to_s).uniq.freeze
-      ).freeze
+    def build_policy_contract(result, allow_tables)
+      self.class.send(:issue_policy_contract, result, allow_tables, @config)
     end
 
     def deep_dup_value(value)

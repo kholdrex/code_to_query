@@ -944,7 +944,8 @@ RSpec.describe CodeToQuery::Compiler do
         result = compiler.compile(intent)
         query = CodeToQuery::Query.new(
           sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
-          intent: result[:intent], allow_tables: nil, config: config
+          intent: result[:intent], allow_tables: nil, config: config,
+          policy_contract: result[:policy_contract]
         )
 
         expect(result[:sql]).to include('"AuditEvents"."TenantID" = $1')
@@ -1105,7 +1106,7 @@ RSpec.describe CodeToQuery::Compiler do
         result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
         query_options = {
           params: result[:params], bind_spec: result[:bind_spec], intent: result[:intent],
-          allow_tables: nil, config: config
+          allow_tables: nil, config: config, policy_contract: result[:policy_contract]
         }
         correlated_query = CodeToQuery::Query.new(sql: result[:sql], **query_options)
         widened_query = CodeToQuery::Query.new(
@@ -1131,7 +1132,8 @@ RSpec.describe CodeToQuery::Compiler do
         result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
         query = CodeToQuery::Query.new(
           sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
-          intent: result[:intent], allow_tables: nil, config: config
+          intent: result[:intent], allow_tables: nil, config: config,
+          policy_contract: result[:policy_contract]
         )
 
         expect(result[:intent]).not_to have_key('__policy_allowed_tables')
@@ -1197,7 +1199,8 @@ RSpec.describe CodeToQuery::Compiler do
         result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
         query = CodeToQuery::Query.new(
           sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
-          intent: result[:intent], allow_tables: nil, config: config
+          intent: result[:intent], allow_tables: nil, config: config,
+          policy_contract: result[:policy_contract]
         )
 
         expect(result[:sql]).to include('"answers"."tenant_id" = $1')

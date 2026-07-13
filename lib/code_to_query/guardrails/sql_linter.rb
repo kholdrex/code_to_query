@@ -43,7 +43,7 @@ module CodeToQuery
 
       def check_unsupported_table_query_expressions!(sql)
         return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
-        return unless sql.match?(/\bTABLE\s+(?:ONLY\s+)?(?:"|[a-zA-Z_])/i)
+        return unless Query::SqlScanner.new.table_query_expression?(sql)
 
         raise SecurityError, 'PostgreSQL TABLE query expressions are not supported'
       end
