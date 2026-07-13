@@ -354,7 +354,15 @@ module CodeToQuery
       bind_keys = Array(@bind_spec).filter_map { |bind| bind[:key]&.to_s }
       param_keys = @params.keys.map(&:to_s)
 
-      expected_keys.all? { |key| bind_keys.include?(key) && param_keys.include?(key) }
+      return false unless expected_keys.all? { |key| bind_keys.include?(key) && param_keys.include?(key) }
+
+      Array(@bind_spec).each_with_index.all? do |bind, index|
+        next true unless expected_keys.include?(bind[:key]&.to_s) && !bind[:key].to_s.start_with?('policy_subquery_')
+
+        sql_scanner.policy_predicate_bind?(
+          @sql, @intent['table'], bind[:column], index + 1, adapter: @config.adapter
+        )
+      end
     end
 
     def policy_predicates_expected?
@@ -487,6 +495,7 @@ module CodeToQuery
         bind = Array(@bind_spec)[number - 1]
         sql_scanner.policy_predicate_bind_numbers(
           subquery[:sql], table, bind && bind[:column],
+          adapter: @config.adapter,
           question_bind_number: number, source_sql: @sql, source_offset: subquery[:start]
         ).include?(number)
       end

@@ -549,6 +549,90 @@ RSpec.describe CodeToQuery::Query do
       config.policy_adapter = nil
     end
 
+    it 'rejects main-table policy binds outside a mandatory qualified WHERE predicate' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['questions'] } }
+
+      [
+        'SELECT $1 AS leaked_policy_value FROM "questions" WHERE TRUE LIMIT 10',
+        'SELECT * FROM "questions" WHERE "questions"."tenant_id" = $1 OR TRUE LIMIT 10',
+        'SELECT * FROM "questions" WHERE "tenant_id" = $1 LIMIT 10',
+        'SELECT * FROM "questions" WHERE "other"."tenant_id" = $1 LIMIT 10'
+      ].each do |adversarial_sql|
+        q = described_class.new(
+          sql: adversarial_sql,
+          params: { 'policy_tenant_id' => 42 },
+          bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+          intent: {
+            'table' => 'questions', 'type' => 'select',
+            '__policy_expected_keys' => ['policy_tenant_id']
+          },
+          allow_tables: ['questions'], config: config
+        )
+
+        expect(q.safe?).to be(false), "expected to reject #{adversarial_sql.inspect}"
+      end
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'accepts compiler-shaped main-table policy predicates with trailing clauses' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['questions'] } }
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE "questions"."tenant_id" = $1 ORDER BY "questions"."id" LIMIT 10',
+        params: { 'policy_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions', 'type' => 'select',
+          '__policy_expected_keys' => ['policy_tenant_id']
+        },
+        allow_tables: ['questions'], config: config
+      )
+
+      expect(q.safe?).to be true
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'uses adapter identifier casing semantics for policy predicates' do
+      policy_adapter = ->(_user, **) { { allowed_tables: ['questions'] } }
+      cases = {
+        postgres: 'QUESTIONS.TENANT_ID',
+        sqlite: '"QUESTIONS"."TENANT_ID"',
+        mysql: '`questions`.`TENANT_ID`'
+      }
+
+      cases.each do |adapter, qualified_column|
+        q = described_class.new(
+          sql: "SELECT * FROM questions WHERE #{qualified_column} = $1 LIMIT 10",
+          params: { 'policy_tenant_id' => 42 },
+          bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+          intent: { 'table' => 'questions', 'type' => 'select', '__policy_expected_keys' => ['policy_tenant_id'] },
+          allow_tables: ['questions'], config: stub_config(adapter: adapter, policy_adapter: policy_adapter)
+        )
+
+        expect(q.safe?).to be(true), "expected #{adapter} casing semantics to be honored"
+      end
+    end
+
+    it 'rejects a differently cased quoted PostgreSQL policy column' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."TENANT_ID" = $1)',
+        params: { 'policy_subquery_1_answers_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_subquery_1_answers_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: {
+          'table' => 'questions', 'type' => 'select',
+          'filters' => [{ 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers', 'fk_column' => 'question_id' }],
+          '__policy_expected_keys' => ['policy_subquery_1_answers_tenant_id']
+        },
+        allow_tables: %w[questions answers], config: config
+      )
+
+      expect(q.safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
     it 'rejects policy binds used only in SELECT or tautological expressions' do
       config.policy_adapter = ->(_user, **) { { allowed_tables: %w[questions answers] } }
 

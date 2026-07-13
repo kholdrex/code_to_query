@@ -61,32 +61,31 @@ module CodeToQuery
         end
       end
 
+      def policy_predicate_bind?(sql, table, column, bind_number, adapter:)
+        policy_predicate_bind_numbers(
+          sql, table, column, adapter: adapter, question_bind_number: bind_number, source_sql: sql
+        ).include?(bind_number)
+      end
+
       # Identify binds used as values of the expected qualified policy column.
-      # A placeholder elsewhere in the EXISTS body does not enforce policy.
-      def policy_predicate_bind_numbers(sql, table, column, question_bind_number: nil,
+      # A placeholder elsewhere in the query does not enforce policy.
+      def policy_predicate_bind_numbers(sql, table, column, adapter: :postgres, question_bind_number: nil,
                                         source_sql: sql, source_offset: 0)
         return [] if table.to_s.empty? || column.to_s.empty?
 
         searchable = mask_sql_literals_and_comments(sql.to_s)
-        where_match = /\bWHERE\b/i.match(searchable)
-        return [] unless where_match
+        where_body, where_offset = top_level_where_body(searchable)
+        return [] unless where_body
 
-        where_body = searchable[where_match.end(0)..]
         conjuncts = top_level_conjuncts(where_body)
         return [] unless conjuncts
 
-        identifier = lambda do |value|
-          escaped = Regexp.escape(value.to_s)
-          # SQL engines commonly accept Unicode letters in unquoted identifiers.
-          # Treat Unicode letters, marks, numbers, and connector punctuation as
-          # identifier characters so a trusted name cannot match a suffix or
-          # prefix of an attacker-controlled identifier.
-          unquoted = "(?<![\\p{L}\\p{M}\\p{N}\\p{Pc}$])#{escaped}(?![\\p{L}\\p{M}\\p{N}\\p{Pc}$])"
-          "(?:\"#{escaped}\"|`#{escaped}`|#{unquoted})"
-        end
-        qualified = "#{identifier.call(table)}\\s*\\.\\s*#{identifier.call(column)}"
-        wrappers = ->(predicate) { /\A\s*\(*\s*#{predicate}\s*\)*\s*\z/i }
-        question_pattern = wrappers.call("#{qualified}\\s*(?:=\\s*\\?|BETWEEN\\s*\\?\\s+AND\\s*\\?)")
+        qualified = "#{policy_identifier_pattern(table, adapter, table: true)}\\s*\\.\\s*" \
+                    "#{policy_identifier_pattern(column, adapter, table: false)}"
+        wrappers = ->(predicate) { /\A\s*\(*\s*#{predicate}\s*\)*\s*\z/ }
+        question_pattern = wrappers.call(
+          "#{qualified}\\s*(?:=\\s*\\?|(?i:BETWEEN)\\s*\\?\\s+(?i:AND)\\s*\\?)"
+        )
         placeholder_positions = bind_placeholder_positions(source_sql)
         first_placeholder = placeholder_positions.first
         question_placeholders = first_placeholder && source_sql.to_s[first_placeholder.first] == '?'
@@ -99,7 +98,7 @@ module CodeToQuery
             next unless (match = question_pattern.match(conjunct))
 
             match[0].to_enum(:scan, /\?/).each do
-              predicate_offset = where_match.end(0) + conjunct_offset + match.begin(0)
+              predicate_offset = where_offset + conjunct_offset + match.begin(0)
               local_position = predicate_offset + Regexp.last_match.begin(0)
               ordinal = placeholder_ordinals[source_offset + local_position]
               return [ordinal] if ordinal == question_bind_number
@@ -108,7 +107,9 @@ module CodeToQuery
           return []
         end
 
-        pattern = wrappers.call("#{qualified}\\s*(?:=\\s*\\$(\\d+)|BETWEEN\\s*\\$(\\d+)\\s+AND\\s*\\$(\\d+))")
+        pattern = wrappers.call(
+          "#{qualified}\\s*(?:=\\s*\\$(\\d+)|(?i:BETWEEN)\\s*\\$(\\d+)\\s+(?i:AND)\\s*\\$(\\d+))"
+        )
         conjuncts.flat_map do |conjunct|
           match = pattern.match(conjunct)
           match ? match.captures.compact.map(&:to_i) : []
@@ -116,6 +117,64 @@ module CodeToQuery
       end
 
       private
+
+      def top_level_where_body(searchable)
+        structure = mask_sql_literals_comments_and_identifier_contents(searchable)
+        depth = 0
+        where_end = nil
+        structure.to_enum(:scan, /\bWHERE\b|[()]/i).each do
+          token = Regexp.last_match(0)
+          if token == '('
+            depth += 1
+          elsif token == ')'
+            return [nil, nil] if depth.zero?
+
+            depth -= 1
+          elsif depth.zero?
+            where_end = Regexp.last_match.end(0)
+            break
+          end
+        end
+        return [nil, nil] unless where_end
+
+        finish = searchable.length
+        suffix = structure[where_end..]
+        suffix.to_enum(:scan, /\b(?:GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|OFFSET|FETCH|FOR|UNION|INTERSECT|EXCEPT|RETURNING)\b|[()]/i).each do
+          token = Regexp.last_match(0)
+          if token == '('
+            depth += 1
+          elsif token == ')'
+            return [nil, nil] if depth.zero?
+
+            depth -= 1
+          elsif depth.zero?
+            finish = where_end + Regexp.last_match.begin(0)
+            break
+          end
+        end
+        return [nil, nil] unless depth.zero?
+
+        [searchable[where_end...finish], where_end]
+      end
+
+      def policy_identifier_pattern(value, adapter, table:)
+        escaped = Regexp.escape(value.to_s)
+        boundary = '[\\p{L}\\p{M}\\p{N}\\p{Pc}$]'
+        exact_unquoted = "(?<!#{boundary})#{escaped}(?!#{boundary})"
+        folded_unquoted = "(?i:(?<!#{boundary})#{escaped}(?!#{boundary}))"
+
+        case adapter.to_sym
+        when :postgres, :postgresql
+          alternatives = ["\"#{escaped}\""]
+          alternatives << folded_unquoted if value.to_s == value.to_s.downcase
+        when :mysql
+          identifier = table ? escaped : "(?i:#{escaped})"
+          alternatives = ["`#{identifier}`", table ? exact_unquoted : folded_unquoted]
+        else # SQLite resolves quoted and unquoted identifiers case-insensitively.
+          alternatives = ["(?i:\"#{escaped}\")", "(?i:`#{escaped}`)", folded_unquoted]
+        end
+        "(?:#{alternatives.join('|')})"
+      end
 
       # Return mandatory top-level WHERE conjuncts. Nested expressions stay
       # intact, so policy text under NOT, CASE, or a subquery cannot count.
