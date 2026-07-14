@@ -1120,6 +1120,70 @@ RSpec.describe CodeToQuery::Compiler do
         expect(widened_query.safe?).to be false
       end
 
+      it 'does not widen an explicit caller allowlist with an authorized related table' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          if kwargs[:table] == 'questions'
+            { allowed_tables: %w[questions answers] }
+          else
+            { allowed_tables: ['answers'], enforced_predicates: { tenant_id: 42 } }
+          end
+        end
+
+        result = compiler.compile(
+          {
+            'table' => 'questions', 'columns' => ['*'],
+            'filters' => [related_filter('answers')], 'limit' => 100, 'params' => {}
+          },
+          allow_tables: ['questions']
+        )
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: ['questions'], config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(query.safe?).to be false
+      end
+
+      # rubocop:disable RSpec/ExampleLength
+      it 'keeps policy bind ownership distinct for colliding quoted table names' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          case kwargs[:table]
+          when 'a-b'
+            { allowed_tables: ['a-b'], enforced_predicates: { tenant_id: 7 } }
+          when 'a_b'
+            { allowed_tables: ['a_b'], enforced_predicates: { tenant_id: 9 } }
+          else
+            { allowed_tables: %w[questions a-b a_b] }
+          end
+        end
+
+        result = compiler.compile(
+          {
+            'table' => 'questions', 'columns' => ['*'],
+            'filters' => [
+              related_filter('a-b'),
+              related_filter('a_b', operation: 'not_exists')
+            ],
+            'limit' => 100, 'params' => {}
+          },
+          allow_tables: %w[questions a-b a_b]
+        )
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: %w[questions a-b a_b], config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(result[:sql]).to include('FROM "a-b"', 'FROM "a_b"')
+        expect(result[:params]).to include(
+          'policy_subquery_1_a_b_tenant_id' => 7,
+          'policy_subquery_2_a_b_tenant_id' => 9
+        )
+        expect(query.safe?).to be true
+      end
+      # rubocop:enable RSpec/ExampleLength
+
       it 'preserves an unrestricted base policy when authorizing a related table' do
         config.policy_adapter = lambda do |_user, **kwargs|
           if kwargs[:table] == 'answers'

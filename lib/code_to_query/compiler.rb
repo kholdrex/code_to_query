@@ -566,6 +566,9 @@ module CodeToQuery
       enforce_related_allowed_columns!(info, related_table, filter)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 
+      # Preserve declaration ownership structurally; policy key fragments are
+      # intentionally display-safe but are not an injective table identity.
+      policy_filter_index = Array(intent['filters']).index { |candidate| candidate.equal?(filter) }
       predicates.each do |column, value|
         rcol = "#{quote_ident(related_table)}.#{quote_ident(column)}"
         policy_key_prefix = subquery_policy_key_prefix(related_table, column, placeholder_index)
@@ -576,10 +579,10 @@ module CodeToQuery
           params_hash[start_key] = value.begin
           params_hash[end_key] = value.end
           p1 = placeholder_for_adapter(placeholder_index)
-          append_bind_spec(bind_spec, key: start_key, column: column)
+          append_bind_spec(bind_spec, key: start_key, column: column, policy_filter_index: policy_filter_index)
           placeholder_index += 1
           p2 = placeholder_for_adapter(placeholder_index)
-          append_bind_spec(bind_spec, key: end_key, column: column)
+          append_bind_spec(bind_spec, key: end_key, column: column, policy_filter_index: policy_filter_index)
           placeholder_index += 1
           sub_where << "#{rcol} BETWEEN #{p1} AND #{p2}"
         else
@@ -587,7 +590,7 @@ module CodeToQuery
           merge_policy_expected_keys!(intent, key)
           params_hash[key] = value
           p = placeholder_for_adapter(placeholder_index)
-          append_bind_spec(bind_spec, key: key, column: column)
+          append_bind_spec(bind_spec, key: key, column: column, policy_filter_index: policy_filter_index)
           placeholder_index += 1
           sub_where << "#{rcol} = #{p}"
         end
@@ -886,8 +889,10 @@ module CodeToQuery
       having_filter['param'] || "having_#{having_filter['column']}"
     end
 
-    def append_bind_spec(bind_spec, key:, column:, cast: nil)
-      bind_spec << { key: key, column: column, cast: cast }
+    def append_bind_spec(bind_spec, key:, column:, cast: nil, policy_filter_index: nil)
+      bind = { key: key, column: column, cast: cast }
+      bind[:policy_filter_index] = policy_filter_index unless policy_filter_index.nil?
+      bind_spec << bind
     end
 
     def placeholder_for_adapter(index)

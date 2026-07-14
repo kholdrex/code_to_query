@@ -404,6 +404,13 @@ module CodeToQuery
       related_tables = Array(@intent['__policy_related_tables']).compact.map(&:to_s).uniq
       return effective_lint_allow_tables if related_tables.empty? || !allowlist_sources_present?
 
+      explicit_tables = Array(@allow_tables).compact.map(&:to_s).uniq
+      if explicit_tables.any?
+        related_tables.select! do |table|
+          explicit_tables.any? { |explicit| allowlist_names_equivalent?(table, explicit) }
+        end
+      end
+
       (Array(effective_lint_allow_tables) + related_tables).compact.map(&:to_s).uniq
     end
 
@@ -513,19 +520,34 @@ module CodeToQuery
     end
 
     def policy_binds_by_related_filter
-      declarations_by_table = Array(@intent['filters']).select do |filter|
+      filters = Array(@intent['filters'])
+      declarations = filters.select do |filter|
         %w[exists not_exists].include?(filter['op'].to_s.downcase) && filter['related_table']
-      end.group_by { |filter| filter['related_table'].to_s }
+      end
 
-      declarations_by_table.each_with_object({}.compare_by_identity) do |(table, declarations), result|
+      # Compiler-issued bind metadata is covered by the opaque policy contract.
+      # Prefer it over lossy policy-key fragments when it is available.
+      if Array(@bind_spec).any? { |bind| bind.key?(:policy_filter_index) }
+        return declarations.each_with_object({}.compare_by_identity) do |declaration, result|
+          declaration_index = filters.index { |filter| filter.equal?(declaration) }
+          result[declaration] = Array(@bind_spec).each_with_index.filter_map do |bind, index|
+            index + 1 if bind[:policy_filter_index] == declaration_index
+          end
+        end
+      end
+
+      # Retain compatibility for direct Query construction with legacy bind specs.
+      declarations_by_table = declarations.group_by { |filter| filter['related_table'].to_s }
+
+      declarations_by_table.each_with_object({}.compare_by_identity) do |(table, table_declarations), result|
         table_fragment = table.gsub(/[^a-zA-Z0-9_]/, '_')
         bind_numbers = Array(@bind_spec).each_with_index.filter_map do |bind, index|
           key = bind[:key]&.to_s
           index + 1 if key&.match?(/\Apolicy_subquery_\d+_#{Regexp.escape(table_fragment)}_/)
         end
-        quotient, remainder = bind_numbers.length.divmod(declarations.length)
+        quotient, remainder = bind_numbers.length.divmod(table_declarations.length)
         offset = 0
-        declarations.each_with_index do |declaration, index|
+        table_declarations.each_with_index do |declaration, index|
           count = quotient + (index < remainder ? 1 : 0)
           result[declaration] = bind_numbers.slice(offset, count)
           offset += count

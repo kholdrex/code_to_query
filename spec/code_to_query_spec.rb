@@ -191,6 +191,27 @@ RSpec.describe CodeToQuery do
       expect { described_class.ask(prompt: 'Get questions') }.not_to raise_error
     end
 
+    it 'does not widen an explicit caller allowlist through the ask pipeline' do
+      intent = {
+        'table' => 'questions', 'type' => 'select', 'columns' => ['*'],
+        'filters' => [exists_related_filter], 'limit' => 100, 'params' => {}
+      }
+      planner = instance_double(CodeToQuery::Planner, plan: intent)
+      validator = instance_double(CodeToQuery::Validator, validate: intent)
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      described_class.config.policy_adapter = lambda do |_user, **context|
+        if context[:table] == 'questions'
+          { allowed_tables: %w[questions answers] }
+        else
+          { allowed_tables: ['answers'], enforced_predicates: { tenant_id: 42 } }
+        end
+      end
+
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
+        .to raise_error(SecurityError, /allowed list/i)
+    end
+
     it 'rejects EXISTS related tables that fall outside the policy adapter allowlist' do
       planner = instance_double(CodeToQuery::Planner)
       validator = instance_double(CodeToQuery::Validator)
