@@ -526,7 +526,7 @@ module CodeToQuery
 
       sub_where = ["#{rt}.#{fk_col} = #{quote_ident(table)}.#{base_col}"]
       sub_where, placeholder_index = apply_policy_in_subquery(
-        sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user, intent
+        sub_where, bind_spec, params_hash, placeholder_index, current_user, intent, filter
       )
 
       related_filters.each do |related_filter|
@@ -556,12 +556,14 @@ module CodeToQuery
       end
     end
 
-    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user, intent)
+    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, placeholder_index, current_user, intent, filter)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
+      related_table = filter['related_table']
       info = safely_fetch_policy(table: related_table, current_user: current_user, intent: intent)
       merge_policy_allowed_tables!(intent, info, required_table: related_table)
       predicates = extract_enforced_predicates(info)
+      enforce_related_allowed_columns!(info, related_table, filter)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 
       predicates.each do |column, value|
@@ -592,12 +594,54 @@ module CodeToQuery
       end
 
       [sub_where, placeholder_index]
-    rescue PolicyAdapterError
+    rescue PolicyAdapterError, ArgumentError
       raise
     rescue StandardError => e
       raise policy_failure("Policy application failed in subquery: #{e.message}") unless policy_adapter_fail_open?
 
       [sub_where, placeholder_index]
+    end
+
+    def enforce_related_allowed_columns!(policy_info, related_table, filter)
+      allowed_columns = policy_info[:allowed_columns] || policy_info['allowed_columns']
+      return unless allowed_columns.is_a?(Hash) && allowed_columns.any?
+
+      entry = allowed_columns.find do |table, _columns|
+        policy_column_table_allowed?(related_table, table)
+      end
+      if entry.nil? && %i[postgres postgresql].include?(@config.adapter.to_sym) &&
+         allowed_columns.any? { |table, _columns| IdentifierSemantics.ascii_case_insensitive?(related_table, table) }
+        raise ArgumentError,
+              "Invalid intent: policy table key not permitted on '#{related_table}' due to identifier casing"
+      end
+      return unless entry
+
+      columns = Array(entry.last).map(&:to_s)
+      return if columns.empty?
+
+      fk_column = filter['fk_column']
+      unless policy_column_allowed?(fk_column, columns)
+        raise ArgumentError, "Invalid intent: column '#{fk_column}' not permitted on '#{related_table}'"
+      end
+
+      Array(filter['related_filters']).each do |related_filter|
+        column = related_filter['column']
+        next if column.nil? || policy_column_allowed?(column, columns)
+
+        raise ArgumentError, "Invalid intent: filter column '#{column}' not permitted on '#{related_table}'"
+      end
+    end
+
+    def policy_column_allowed?(column, allowed_columns)
+      return allowed_columns.include?(column.to_s) if %i[postgres postgresql].include?(@config.adapter.to_sym)
+
+      allowed_columns.any? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, column) }
+    end
+
+    def policy_column_table_allowed?(table, allowed)
+      return IdentifierSemantics.ascii_case_insensitive?(table, allowed) if %i[mysql sqlite].include?(@config.adapter.to_sym)
+
+      table.to_s == allowed.to_s
     end
 
     def subquery_policy_key_prefix(table, column, placeholder_index)

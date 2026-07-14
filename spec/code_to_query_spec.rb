@@ -219,6 +219,57 @@ RSpec.describe CodeToQuery do
         .to raise_error(SecurityError, /allowed list/i)
     end
 
+    context 'with table-scoped policy column metadata for related filters' do
+      let(:policy_calls) { [] }
+
+      before do
+        described_class.config.policy_adapter = lambda do |_user, **context|
+          table = context.fetch(:table)
+          policy_calls << table
+          columns = table == 'questions' ? ['id'] : %w[question_id status]
+
+          { allowed_columns: { table => columns } }
+        end
+      end
+
+      def ask_with_related_policy_filter(operation:, fk_column: 'question_id', related_columns: ['status'])
+        intent = {
+          'type' => 'select', 'table' => 'questions', 'columns' => ['id'],
+          'filters' => [{
+            'op' => operation, 'related_table' => 'answers',
+            'fk_column' => fk_column, 'base_column' => 'id',
+            'related_filters' => related_columns.map.with_index do |column, index|
+              { 'column' => column, 'op' => '=', 'param' => "answer_filter_#{index}" }
+            end
+          }],
+          'params' => related_columns.each_index.to_h { |index| ["answer_filter_#{index}", index] }
+        }
+        planner = instance_double(CodeToQuery::Planner, plan: intent)
+        allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+
+        described_class.ask(
+          prompt: 'Get questions by answer attributes',
+          allow_tables: %w[questions answers]
+        )
+      end
+
+      %w[exists not_exists].each do |operation|
+        it "rejects a disallowed related fk_column for #{operation}" do
+          expect do
+            ask_with_related_policy_filter(operation: operation, fk_column: 'secret_question_id')
+          end.to raise_error(ArgumentError, /column 'secret_question_id' not permitted on 'answers'/)
+          expect(policy_calls).to eq(%w[questions questions answers])
+        end
+
+        it "checks every related filter column for #{operation}" do
+          expect do
+            ask_with_related_policy_filter(operation: operation, related_columns: %w[status secret])
+          end.to raise_error(ArgumentError, /filter column 'secret' not permitted on 'answers'/)
+          expect(policy_calls).to eq(%w[questions questions answers])
+        end
+      end
+    end
+
     # rubocop:disable RSpec/ExampleLength
     it 'marks compile/lint telemetry as policy-applied when policy binds are present' do
       events = []
