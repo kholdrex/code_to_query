@@ -16,8 +16,12 @@ module CodeToQuery
         query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
       ].freeze
 
+      POSTGRES_QUOTED_FUNCTION_IDENTIFIER = /
+        (?<!")"(?<identifier>(?:""|[^"])*)"\s*\(
+      /x
+
       POSTGRES_UNICODE_FUNCTION_IDENTIFIER = /
-        (?<![A-Z0-9_$])U&"(?<identifier>(?:""|[^"])*)"
+        (?<![A-Z0-9_$"])U&"(?<identifier>(?:""|[^"])*)"
         (?:\s+UESCAPE\s+'(?<escape>[^'])')?
         \s*\(
       /ix
@@ -279,10 +283,16 @@ module CodeToQuery
         return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
 
         POSTGRES_DYNAMIC_QUERY_FUNCTIONS.each do |func|
-          # PostgreSQL accepts quoted built-in function identifiers, including
-          # schema-qualified calls such as pg_catalog."query_to_xml"(...).
-          pattern = /(?:\b#{func}|"#{func}")\s*\(/i
-          raise SecurityError, "Dangerous function '#{func}' is not allowed" if sql.match?(pattern)
+          next unless postgres_unquoted_function_call?(sql, func)
+
+          raise SecurityError, "Dangerous function '#{func}' is not allowed"
+        end
+
+        sql.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
+          identifier = Regexp.last_match[:identifier].gsub('""', '"')
+          next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
+
+          raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
 
         sql.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
@@ -292,6 +302,20 @@ module CodeToQuery
 
           raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
+      end
+
+      def postgres_unquoted_function_call?(sql, function)
+        sql.to_enum(:scan, /#{Regexp.escape(function)}\s*\(/i).any? do
+          match = Regexp.last_match
+          previous = match.begin(0).positive? ? sql[match.begin(0) - 1] : nil
+          following = sql[match.begin(0) + function.length]
+
+          !postgres_identifier_continuation?(previous) && !postgres_identifier_continuation?(following)
+        end
+      end
+
+      def postgres_identifier_continuation?(character)
+        character && (!character.ascii_only? || character.match?(/[A-Z0-9_$]/i))
       end
 
       def decode_postgres_unicode_identifier(identifier, escape)

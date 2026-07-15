@@ -259,6 +259,18 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
           end
         end
 
+        it 'does not overmatch denied text after a doubled quote in a quoted identifier' do
+          sql = 'SELECT "prefix""query_to_xml"($1) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
+        it 'does not overmatch denied text after a doubled quote in a Unicode quoted identifier' do
+          sql = 'SELECT U&"prefix""query_to_xml"($1) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
         it 'does not overmatch a longer Unicode quoted function identifier' do
           sql = 'SELECT U&"query_to_xml_backup"($1) FROM users LIMIT 10'
 
