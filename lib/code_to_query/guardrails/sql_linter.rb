@@ -280,22 +280,24 @@ module CodeToQuery
       def check_no_postgres_dynamic_query_functions!(sql)
         return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
 
-        searchable = Query::SqlScanner.new.mask_literals_and_comments(sql)
+        scanner = Query::SqlScanner.new
+        quoted_searchable = scanner.mask_literals_and_comments(sql)
+        executable_searchable = scanner.mask_literals_comments_and_identifier_contents(sql)
 
         POSTGRES_DYNAMIC_QUERY_FUNCTIONS.each do |func|
-          next unless postgres_unquoted_function_call?(searchable, func)
+          next unless postgres_unquoted_function_call?(executable_searchable, func)
 
           raise SecurityError, "Dangerous function '#{func}' is not allowed"
         end
 
-        searchable.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
+        quoted_searchable.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
           identifier = Regexp.last_match[:identifier].gsub('""', '"')
           next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
 
           raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
 
-        searchable.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
+        quoted_searchable.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
           match = Regexp.last_match
           escape, function_call = postgres_unicode_function_escape(sql, match.end(0))
           next unless function_call

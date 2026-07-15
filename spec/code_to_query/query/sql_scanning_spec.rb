@@ -34,6 +34,31 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
 
       expect(scanner.bind_placeholder_positions(sql)).to eq([[sql.rindex('?'), 1]])
     end
+
+    it 'honors backslash-escaped apostrophes in PostgreSQL E strings' do
+      %w[E e].each do |prefix|
+        sql = "SELECT #{prefix}'prefix\\' query_to_xml($1) suffix', $2"
+
+        expect(scanner.bind_placeholder_positions(sql)).to eq([[sql.index('$2'), 2]])
+      end
+    end
+
+    it 'distinguishes ordinary strings from PostgreSQL E strings' do
+      sql = %q(SELECT 'ordinary\' , $1)
+
+      expect(scanner.bind_placeholder_positions(sql)).to eq([[sql.index('$1'), 1]])
+    end
+  end
+
+  describe '#mask_literals_comments_and_identifier_contents' do
+    it 'masks denied-looking text in literals and quoted identifier bodies' do
+      sql = "SELECT E'prefix\\' query_to_xml($1)', \"query_to_xml ( suffix\", " \
+            'U&"query_to_xml ( decoy", query_to_xml($2)'
+      masked = scanner.mask_literals_comments_and_identifier_contents(sql)
+
+      expect(masked.scan('query_to_xml').length).to eq(1)
+      expect(masked.index('query_to_xml')).to eq(sql.rindex('query_to_xml'))
+    end
   end
 
   describe '#exists_subqueries' do

@@ -308,6 +308,18 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
 
           expect { linter.check!(sql) }.not_to raise_error
         end
+
+        it 'does not scan denied-looking text inside an ordinary quoted identifier as an unquoted call' do
+          sql = 'SELECT "prefix query_to_xml ( suffix" FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
+        it 'does not scan denied-looking text inside a Unicode quoted identifier as an unquoted call' do
+          sql = 'SELECT U&"prefix query_to_xml ( suffix" FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
       end
 
       it 'does not apply the PostgreSQL dynamic-query denylist to other adapters' do

@@ -101,6 +101,13 @@ module CodeToQuery
         mask_sql_literals_and_comments(sql.to_s)
       end
 
+      # Also hide quoted identifier bodies when scanning for executable,
+      # unquoted tokens. Delimiters stay in place so callers can separately
+      # inspect exact quoted identifiers without losing source offsets.
+      def mask_literals_comments_and_identifier_contents(sql)
+        mask_sql_literals_comments_and_identifier_contents(sql.to_s)
+      end
+
       def policy_predicate_bind?(sql, table, column, bind_number, adapter:)
         policy_predicate_bind_numbers(
           sql, table, column, adapter: adapter, question_bind_number: bind_number, source_sql: sql
@@ -436,6 +443,16 @@ module CodeToQuery
               next
             end
             state = :code if char == "'"
+          when :escape_string
+            if char == '\\' && following
+              index += 2
+              next
+            end
+            if char == "'" && following == "'"
+              index += 2
+              next
+            end
+            state = :code if char == "'"
           when :double_quote
             if char == '"' && following == '"'
               index += 2
@@ -457,6 +474,10 @@ module CodeToQuery
               state = :dollar_quote
               dollar_quote_delimiter = delimiter
               index += delimiter.length
+              next
+            elsif postgres_escape_string_start?(source, index)
+              state = :escape_string
+              index += 2
               next
             elsif char == "'"
               state = :single_quote
@@ -513,6 +534,17 @@ module CodeToQuery
             elsif char == "'"
               state = :code
             end
+          when :escape_string
+            masked[index] = ' '
+            if char == '\\' && following
+              masked[index + 1] = ' '
+              index += 1
+            elsif char == "'" && following == "'"
+              masked[index + 1] = ' '
+              index += 1
+            elsif char == "'"
+              state = :code
+            end
           when :double_quote
             state = :code if char == '"'
           when :backtick
@@ -534,6 +566,10 @@ module CodeToQuery
               dollar_quote_delimiter = delimiter
               index += delimiter.length
               next
+            elsif postgres_escape_string_start?(source, index)
+              masked[index] = masked[index + 1] = ' '
+              state = :escape_string
+              index += 1
             elsif char == "'"
               masked[index] = ' '
               state = :single_quote
@@ -563,6 +599,11 @@ module CodeToQuery
       # not the start of a dollar-quoted literal.
       def dollar_quote_delimiter_at(source, index)
         source[index..]&.match(/\A\$(?:[a-zA-Z_][a-zA-Z0-9_]*)?\$/)&.[](0)
+      end
+
+      def postgres_escape_string_start?(source, index)
+        source[index]&.casecmp?('E') && source[index + 1] == "'" &&
+          !postgres_identifier_continuation?(index.positive? ? source[index - 1] : nil)
       end
 
       public
