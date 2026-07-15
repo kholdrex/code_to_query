@@ -254,11 +254,32 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
 
   describe '#extract_table_names' do
     it 'treats PostgreSQL ONLY as a relation modifier' do
-      expect(scanner.extract_table_names('SELECT * FROM ONLY admin_secrets')).to eq(['admin_secrets'])
+      postgres_scanner = described_class.new(adapter: :postgres)
+
+      expect(postgres_scanner.extract_table_names('SELECT * FROM ONLY admin_secrets')).to eq(['admin_secrets'])
     end
 
     it 'extracts a quoted relation after PostgreSQL ONLY' do
-      expect(scanner.extract_table_names('SELECT * FROM ONLY "Admin Secrets"')).to eq(['Admin Secrets'])
+      postgres_scanner = described_class.new(adapter: :postgres)
+
+      expect(postgres_scanner.extract_table_names('SELECT * FROM ONLY "Admin Secrets"')).to eq(['Admin Secrets'])
+    end
+
+    it 'treats PostgreSQL ONLY as a JOIN relation modifier' do
+      postgres_scanner = described_class.new(adapter: :postgres)
+
+      expect(postgres_scanner.extract_table_names('SELECT * FROM users JOIN ONLY admin_secrets ON TRUE'))
+        .to eq(%w[users admin_secrets])
+    end
+
+    it 'keeps ONLY as the relation name on adapters where it is not a modifier' do
+      %i[mysql sqlite].each do |adapter|
+        adapter_scanner = described_class.new(adapter: adapter)
+
+        expect(adapter_scanner.extract_table_names('SELECT * FROM ONLY admin_secrets')).to eq(['ONLY'])
+        expect(adapter_scanner.extract_table_names('SELECT * FROM users JOIN ONLY admin_secrets ON TRUE'))
+          .to eq(%w[users ONLY])
+      end
     end
 
     it 'fails closed for qualified table references instead of discarding the qualifier' do

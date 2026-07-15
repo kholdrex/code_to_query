@@ -23,6 +23,10 @@ module CodeToQuery
         UNIQUE USER USING VARIADIC VERBOSE WHEN WHERE WINDOW WITH
       ].freeze
 
+      def initialize(adapter: nil)
+        @adapter = adapter&.to_sym
+      end
+
       def strip_exists_subqueries(sql)
         source = sql.to_s
         searchable = mask_sql_literals_comments_and_identifier_contents(source)
@@ -677,7 +681,8 @@ module CodeToQuery
         # ONLY is a PostgreSQL relation modifier, not the relation itself. If
         # it is consumed as an ordinary identifier, the following relation is
         # mistaken for an alias and can evade an allowlist containing `only`.
-        table_reference_pattern = /\A(?:ONLY\s+)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
+        relation_modifier = %i[postgres postgresql].include?(@adapter) ? '(?:ONLY\\s+)?' : ''
+        table_reference_pattern = /\A#{relation_modifier}(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
 
         match = reference.to_s.strip.match(table_reference_pattern)
         return unless match

@@ -597,7 +597,7 @@ module CodeToQuery
     end
 
     def sql_scanner
-      @sql_scanner ||= SqlScanner.new
+      @sql_scanner ||= SqlScanner.new(adapter: @config.adapter)
     end
 
     def infer_column_type(connection, table_name, column_name, explicit_cast, param_key = column_name)

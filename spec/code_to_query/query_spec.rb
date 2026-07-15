@@ -977,13 +977,23 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be false # SqlLinter intentionally rejects SQL comments.
     end
 
-    it 'fails closed for an unparseable top-level table reference' do
+    it 'parses PostgreSQL ONLY in the central top-level allowlist check' do
       q = described_class.new(
-        sql: 'SELECT * FROM ONLY "questions"', params: {}, bind_spec: [],
+        sql: 'SELECT * FROM ONLY "questions" LIMIT 1', params: {}, bind_spec: [],
         intent: { 'table' => 'questions', 'type' => 'select' }, allow_tables: ['questions'], config: config
       )
 
-      expect(q.safe?).to be false
+      expect(q.safe?).to be true
+    end
+
+    it 'does not let allow_tables only hide another relation from the central allowlist check' do
+      q = described_class.new(
+        sql: 'SELECT * FROM ONLY admin_secrets LIMIT 1', params: {}, bind_spec: [],
+        intent: { 'table' => 'only', 'type' => 'select' }, allow_tables: ['only'], config: config
+      )
+
+      expect { q.send(:check_top_level_table_allowlist!) }
+        .to raise_error(SecurityError, /admin_secrets.*not in the allowed list/)
     end
 
     it 'rejects a disallowed FROM table continued on a second line' do
