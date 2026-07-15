@@ -259,6 +259,38 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
           end
         end
 
+        it 'blocks Unicode identifiers with escape string UESCAPE clauses beside parameterized LIKE operators' do
+          %w[LIKE ILIKE].each do |operator|
+            sql = %(SELECT U&"query_to_!0078ml" UESCAPE E'!'($q$TABLE secrets$q$, true, false, $x$$x$) FROM users WHERE name #{operator} $3 LIMIT 10)
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /query_to_xml/), operator
+          end
+        end
+
+        it 'accepts standard and escape-string UESCAPE forms for benign Unicode function identifiers' do
+          ["'!'", "E'!'", "e'!'"].each do |uescape|
+            sql = %(SELECT U&"safe_function" UESCAPE #{uescape}($1) FROM users WHERE name LIKE $2 LIMIT 10)
+
+            expect { linter.check!(sql) }.not_to raise_error, uescape
+          end
+        end
+
+        it 'fails closed when a Unicode function identifier UESCAPE is inconclusive' do
+          sql = %(SELECT U&"safe_function" UESCAPE E'!!'($1) FROM users WHERE name LIKE $2 LIMIT 10)
+
+          expect { linter.check!(sql) }.to raise_error(SecurityError, /Inconclusive PostgreSQL Unicode/)
+        end
+
+        it 'does not treat denied-looking calls in dollar-quoted literals as functions' do
+          calls = ['query_to_xml($1)', '"query_to_xml"($1)']
+
+          calls.each do |call|
+            sql = "SELECT $q$#{call}$q$ FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.not_to raise_error, call
+          end
+        end
+
         it 'does not overmatch denied text after a doubled quote in a quoted identifier' do
           sql = 'SELECT "prefix""query_to_xml"($1) FROM users LIMIT 10'
 

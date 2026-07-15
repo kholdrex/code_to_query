@@ -22,8 +22,6 @@ module CodeToQuery
 
       POSTGRES_UNICODE_FUNCTION_IDENTIFIER = /
         (?<![A-Z0-9_$"])U&"(?<identifier>(?:""|[^"])*)"
-        (?:\s+UESCAPE\s+'(?<escape>[^'])')?
-        \s*\(
       /ix
 
       def initialize(config, allow_tables: nil)
@@ -282,26 +280,103 @@ module CodeToQuery
       def check_no_postgres_dynamic_query_functions!(sql)
         return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
 
+        searchable = Query::SqlScanner.new.mask_literals_and_comments(sql)
+
         POSTGRES_DYNAMIC_QUERY_FUNCTIONS.each do |func|
-          next unless postgres_unquoted_function_call?(sql, func)
+          next unless postgres_unquoted_function_call?(searchable, func)
 
           raise SecurityError, "Dangerous function '#{func}' is not allowed"
         end
 
-        sql.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
+        searchable.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
           identifier = Regexp.last_match[:identifier].gsub('""', '"')
           next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
 
           raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
 
-        sql.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
+        searchable.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
           match = Regexp.last_match
-          identifier = decode_postgres_unicode_identifier(match[:identifier], match[:escape] || '\\')
+          escape, function_call = postgres_unicode_function_escape(sql, match.end(0))
+          next unless function_call
+
+          unless escape
+            raise SecurityError, 'Inconclusive PostgreSQL Unicode function identifier'
+          end
+
+          identifier = decode_postgres_unicode_identifier(match[:identifier], escape)
+          unless identifier
+            raise SecurityError, 'Inconclusive PostgreSQL Unicode function identifier'
+          end
           next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
 
           raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
+      end
+
+      def postgres_unicode_function_escape(sql, index)
+        whitespace_start = index
+        index += 1 while sql[index]&.match?(/\s/)
+        escape = '\\'
+
+        if index > whitespace_start && sql[index, 7]&.casecmp?('UESCAPE') &&
+           !postgres_identifier_continuation?(sql[index + 7])
+          index += 7
+          index += 1 while sql[index]&.match?(/\s/)
+          escape, index = postgres_uescape_literal(sql, index)
+          return [nil, true] unless index
+
+          index += 1 while sql[index]&.match?(/\s/)
+        end
+
+        [escape, sql[index] == '(']
+      end
+
+      def postgres_uescape_literal(sql, index)
+        escape_string = sql[index]&.casecmp?('E') && sql[index + 1] == "'"
+        index += 1 if escape_string
+        return [nil, nil] unless sql[index] == "'"
+
+        index += 1
+        value = +''
+        while index < sql.length
+          if sql[index] == "'" && sql[index + 1] == "'"
+            value << "'"
+            index += 2
+          elsif sql[index] == "'"
+            return [value.length == 1 ? value : nil, index + 1]
+          elsif escape_string && sql[index] == '\\'
+            character, index = postgres_escape_string_character(sql, index + 1)
+            return [nil, nil] unless index
+
+            value << character
+          else
+            value << sql[index]
+            index += 1
+          end
+        end
+        [nil, nil]
+      end
+
+      def postgres_escape_string_character(sql, index)
+        return [nil, nil] unless sql[index]
+
+        simple = { 'b' => "\b", 'f' => "\f", 'n' => "\n", 'r' => "\r", 't' => "\t" }
+        return [simple.fetch(sql[index], sql[index]), index + 1] unless sql[index].match?(/[0-7xXuU]/)
+
+        pattern, base = case sql[index]
+                        when /[0-7]/ then [/[0-7]{1,3}/, 8]
+                        when /[xX]/ then [/[0-9A-F]{1,2}/i, 16]
+                        when 'u' then [/[0-9A-F]{4}/i, 16]
+                        when 'U' then [/[0-9A-F]{8}/i, 16]
+                        end
+        digit_index = sql[index].match?(/[xXuU]/) ? index + 1 : index
+        digits = sql[digit_index..]&.match(/\A#{pattern}/)&.[](0)
+        return [nil, nil] unless digits
+
+        [digits.to_i(base).chr(Encoding::UTF_8), digit_index + digits.length]
+      rescue RangeError
+        [nil, nil]
       end
 
       def postgres_unquoted_function_call?(sql, function)

@@ -94,6 +94,13 @@ module CodeToQuery
         end
       end
 
+      # Preserve source offsets while hiding literal values and comments. This
+      # lets callers inspect executable SQL without mistaking function-like text
+      # in PostgreSQL dollar quotes for code.
+      def mask_literals_and_comments(sql)
+        mask_sql_literals_and_comments(sql.to_s)
+      end
+
       def policy_predicate_bind?(sql, table, column, bind_number, adapter:)
         policy_predicate_bind_numbers(
           sql, table, column, adapter: adapter, question_bind_number: bind_number, source_sql: sql
