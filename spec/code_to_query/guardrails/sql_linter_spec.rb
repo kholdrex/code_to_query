@@ -215,6 +215,44 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         sql = 'SELECT * FROM information_schema.tables LIMIT 100'
         expect { linter.check!(sql) }.to raise_error(SecurityError, /information_schema/)
       end
+
+      context 'with PostgreSQL server-side query execution' do
+        let(:config) { stub_config(adapter: :postgres, max_limit: 1000, max_joins: 2) }
+
+        it 'blocks query_to_xml from hiding a non-allowlisted table in dollar-quoted SQL' do
+          sql = 'SELECT query_to_xml($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.to raise_error(SecurityError, /query_to_xml/)
+        end
+
+        it 'blocks query_to_xml schema-generation siblings' do
+          functions = %w[query_to_xmlschema query_to_xml_and_xmlschema]
+
+          functions.each do |function|
+            sql = "SELECT #{function}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function
+          end
+        end
+
+        it 'blocks schema-qualified and quoted query_to_xml calls' do
+          calls = ['pg_catalog.query_to_xml', 'pg_catalog."query_to_xml"']
+
+          calls.each do |function_call|
+            sql = "SELECT #{function_call}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError), function_call
+          end
+        end
+      end
+
+      it 'does not apply the PostgreSQL dynamic-query denylist to other adapters' do
+        mysql_config = stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2)
+        mysql_linter = described_class.new(mysql_config, allow_tables: %w[users])
+        sql = 'SELECT query_to_xml($1, true, false, $2) FROM users LIMIT 10'
+
+        expect { mysql_linter.check!(sql) }.not_to raise_error
+      end
     end
   end
 end

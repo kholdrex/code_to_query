@@ -3,6 +3,19 @@
 module CodeToQuery
   module Guardrails
     class SqlLinter
+      DANGEROUS_FUNCTIONS = %w[
+        load_file outfile dumpfile
+        sys_exec sys_eval
+        benchmark sleep pg_sleep
+        version user database schema
+        current_user current_database current_schema
+        inet_server_addr inet_client_addr
+      ].freeze
+
+      POSTGRES_DYNAMIC_QUERY_FUNCTIONS = %w[
+        query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
+      ].freeze
+
       def initialize(config, allow_tables: nil)
         @config = config
         @allow_tables = Array(allow_tables).compact.map(&:to_s)
@@ -250,17 +263,17 @@ module CodeToQuery
       end
 
       def check_no_dangerous_functions!(sql)
-        dangerous_functions = %w[
-          load_file outfile dumpfile
-          sys_exec sys_eval
-          benchmark sleep pg_sleep
-          version user database schema
-          current_user current_database current_schema
-          inet_server_addr inet_client_addr
-        ]
-
-        dangerous_functions.each do |func|
+        DANGEROUS_FUNCTIONS.each do |func|
           raise SecurityError, "Dangerous function '#{func}' is not allowed" if sql.match?(/\b#{func}\s*\(/i)
+        end
+
+        return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
+
+        POSTGRES_DYNAMIC_QUERY_FUNCTIONS.each do |func|
+          # PostgreSQL accepts quoted built-in function identifiers, including
+          # schema-qualified calls such as pg_catalog."query_to_xml"(...).
+          pattern = /(?:\b#{func}|"#{func}")\s*\(/i
+          raise SecurityError, "Dangerous function '#{func}' is not allowed" if sql.match?(pattern)
         end
       end
 
