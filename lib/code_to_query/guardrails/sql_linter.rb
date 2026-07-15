@@ -515,16 +515,20 @@ module CodeToQuery
 
       def extract_table_names(sql)
         tables = []
+        relation_modifier = %i[postgres postgresql].include?(@config.adapter.to_sym) ? '(?:ONLY\s+)?' : ''
+        table_reference = /(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+)(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?)/
 
         # Extract FROM clause tables (improved regex)
-        from_matches = sql.scan(/\bFROM\s+(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+)(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?)/i)
+        from_matches = sql.scan(/\bFROM\s+#{relation_modifier}#{table_reference}/i)
         from_matches.each do |match|
           table_name = match.compact.first
           tables << table_name if table_name
         end
 
         # Extract JOIN clause tables (improved regex)
-        join_matches = sql.scan(/\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+)?JOIN\s+(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+)(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?)/i)
+        join_matches = sql.scan(
+          /\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+)?JOIN\s+#{relation_modifier}#{table_reference}/i
+        )
         join_matches.each do |match|
           table_name = match.compact.first
           tables << table_name if table_name

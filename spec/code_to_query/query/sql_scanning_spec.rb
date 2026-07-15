@@ -253,6 +253,14 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
   end
 
   describe '#extract_table_names' do
+    it 'treats PostgreSQL ONLY as a relation modifier' do
+      expect(scanner.extract_table_names('SELECT * FROM ONLY admin_secrets')).to eq(['admin_secrets'])
+    end
+
+    it 'extracts a quoted relation after PostgreSQL ONLY' do
+      expect(scanner.extract_table_names('SELECT * FROM ONLY "Admin Secrets"')).to eq(['Admin Secrets'])
+    end
+
     it 'fails closed for qualified table references instead of discarding the qualifier' do
       expect { scanner.extract_table_names('SELECT * FROM evil.users') }
         .to raise_error(SecurityError, /Unsupported FROM reference/)

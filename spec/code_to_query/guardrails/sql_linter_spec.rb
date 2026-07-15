@@ -92,6 +92,17 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         expect { linter.check!(sql) }.to raise_error(SecurityError, /not in the allowed list/)
       end
 
+      it 'does not allow PostgreSQL ONLY to hide a non-allowlisted relation' do
+        only_linter = described_class.new(config, allow_tables: ['only'])
+
+        expect { only_linter.check!('SELECT * FROM ONLY "admin_secrets" LIMIT 100') }
+          .to raise_error(SecurityError, /admin_secrets.*not in the allowed list/)
+      end
+
+      it 'allows an allowlisted quoted relation after PostgreSQL ONLY' do
+        expect { linter.check!('SELECT * FROM ONLY "users" LIMIT 100') }.not_to raise_error
+      end
+
       it 'validates JOIN table allowlist' do
         sql = 'SELECT * FROM "users" JOIN "admin_secrets" ON users.id = admin_secrets.user_id LIMIT 100'
         expect { linter.check!(sql) }.to raise_error(SecurityError, /not in the allowed list/)

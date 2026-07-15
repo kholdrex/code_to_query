@@ -674,7 +674,10 @@ module CodeToQuery
 
       def extract_table_reference_identifier(reference)
         alias_identifier = '(?:`[^`]+`|"[^"]+"|\'[^\']+\'|[a-zA-Z_][a-zA-Z0-9_]*)'
-        table_reference_pattern = /\A(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
+        # ONLY is a PostgreSQL relation modifier, not the relation itself. If
+        # it is consumed as an ordinary identifier, the following relation is
+        # mistaken for an alias and can evade an allowlist containing `only`.
+        table_reference_pattern = /\A(?:ONLY\s+)?(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+))(?:\s+(?:AS\s+)?#{alias_identifier})?\z/i
 
         match = reference.to_s.strip.match(table_reference_pattern)
         return unless match
