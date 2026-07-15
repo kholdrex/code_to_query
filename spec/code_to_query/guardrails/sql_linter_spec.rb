@@ -219,6 +219,16 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
       context 'with PostgreSQL server-side query execution' do
         let(:config) { stub_config(adapter: :postgres, max_limit: 1000, max_joins: 2) }
 
+        let(:xml_export_functions) do
+          %w[
+            table_to_xml table_to_xmlschema table_to_xml_and_xmlschema
+            query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
+            cursor_to_xml cursor_to_xmlschema
+            schema_to_xml schema_to_xmlschema schema_to_xml_and_xmlschema
+            database_to_xml database_to_xmlschema database_to_xml_and_xmlschema
+          ]
+        end
+
         it 'blocks query_to_xml from hiding a non-allowlisted table in dollar-quoted SQL' do
           sql = 'SELECT query_to_xml($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10'
 
@@ -232,6 +242,59 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
             sql = "SELECT #{function}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
 
             expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function
+          end
+        end
+
+        it 'blocks direct relation, schema, database, and cursor export calls with their real signatures' do
+          calls = [
+            'table_to_xml(to_regclass($1), true, false, $2)',
+            'schema_to_xml($1, true, false, $2)',
+            'database_to_xml(true, false, $1)',
+            'cursor_to_xml($1, 100, true, false, $2)'
+          ]
+
+          calls.each do |function_call|
+            sql = "SELECT #{function_call} FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError), function_call
+          end
+        end
+
+        it 'blocks the complete built-in relation, query, cursor, schema, and database XML export family' do
+          xml_export_functions.each do |function|
+            sql = "SELECT #{function}($1) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function
+          end
+        end
+
+        it 'blocks every XML export function across quoted and schema-qualified forms' do
+          xml_export_functions.each do |function|
+            [
+              %("#{function}"),
+              "public.#{function}",
+              %(public."#{function}")
+            ].each do |function_call|
+              sql = "SELECT #{function_call}($1) FROM users LIMIT 10"
+
+              expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function_call
+            end
+          end
+        end
+
+        it 'blocks every XML export function as a Unicode-escaped quoted identifier' do
+          xml_export_functions.each do |function|
+            encoded = function.sub('x', '!0078')
+            calls = [
+              %(U&"#{function}"),
+              %(public.U&"#{encoded}" UESCAPE '!')
+            ]
+
+            calls.each do |function_call|
+              sql = "SELECT #{function_call}($1) FROM users LIMIT 10"
+
+              expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function_call
+            end
           end
         end
 
@@ -309,6 +372,23 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
           expect { linter.check!(sql) }.not_to raise_error
         end
 
+        it 'does not overmatch longer identifiers based on any XML export function name' do
+          xml_export_functions.each do |function|
+            calls = [
+              "#{function}_backup",
+              %("#{function}_backup"),
+              "public.#{function}_backup",
+              %(public.U&"#{function}_backup")
+            ]
+
+            calls.each do |function_call|
+              sql = "SELECT #{function_call}($1) FROM users LIMIT 10"
+
+              expect { linter.check!(sql) }.not_to raise_error, function_call
+            end
+          end
+        end
+
         it 'does not scan denied-looking text inside an ordinary quoted identifier as an unquoted call' do
           sql = 'SELECT "prefix query_to_xml ( suffix" FROM users LIMIT 10'
 
@@ -322,7 +402,7 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         end
       end
 
-      it 'does not apply the PostgreSQL dynamic-query denylist to other adapters' do
+      it 'does not apply the PostgreSQL server-side XML export denylist to other adapters' do
         mysql_config = stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2)
         mysql_linter = described_class.new(mysql_config, allow_tables: %w[users])
         calls = ['query_to_xml', 'U&"query_to_\+000078ml"']

@@ -12,8 +12,16 @@ module CodeToQuery
         inet_server_addr inet_client_addr
       ].freeze
 
-      POSTGRES_DYNAMIC_QUERY_FUNCTIONS = %w[
+      # PostgreSQL's complete built-in server-side XML export family. These
+      # functions read a relation, query, cursor, schema, or the whole current
+      # database without putting the exported relations in a FROM/JOIN clause,
+      # so every member can bypass this linter's table allowlist.
+      POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS = %w[
+        table_to_xml table_to_xmlschema table_to_xml_and_xmlschema
         query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
+        cursor_to_xml cursor_to_xmlschema
+        schema_to_xml schema_to_xmlschema schema_to_xml_and_xmlschema
+        database_to_xml database_to_xmlschema database_to_xml_and_xmlschema
       ].freeze
 
       POSTGRES_QUOTED_FUNCTION_IDENTIFIER = /
@@ -37,7 +45,7 @@ module CodeToQuery
         check_dangerous_patterns!(normalized)
         check_required_limit!(normalized)
         check_table_allowlist!(normalized) if @allow_tables.any?
-        check_no_postgres_dynamic_query_functions!(normalized)
+        check_no_postgres_server_side_xml_export_functions!(normalized)
         check_no_literals!(normalized)
         check_no_dangerous_functions!(normalized)
         check_no_subqueries!(normalized) if @config.block_subqueries
@@ -277,14 +285,14 @@ module CodeToQuery
         end
       end
 
-      def check_no_postgres_dynamic_query_functions!(sql)
+      def check_no_postgres_server_side_xml_export_functions!(sql)
         return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
 
         scanner = Query::SqlScanner.new
         quoted_searchable = scanner.mask_literals_and_comments(sql)
         executable_searchable = scanner.mask_literals_comments_and_identifier_contents(sql)
 
-        POSTGRES_DYNAMIC_QUERY_FUNCTIONS.each do |func|
+        POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS.each do |func|
           next unless postgres_unquoted_function_call?(executable_searchable, func)
 
           raise SecurityError, "Dangerous function '#{func}' is not allowed"
@@ -292,7 +300,7 @@ module CodeToQuery
 
         quoted_searchable.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
           identifier = Regexp.last_match[:identifier].gsub('""', '"')
-          next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
+          next unless POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS.include?(identifier)
 
           raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
@@ -310,7 +318,7 @@ module CodeToQuery
           unless identifier
             raise SecurityError, 'Inconclusive PostgreSQL Unicode function identifier'
           end
-          next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
+          next unless POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS.include?(identifier)
 
           raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
         end
