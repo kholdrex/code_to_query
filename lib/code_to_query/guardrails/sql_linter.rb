@@ -16,6 +16,12 @@ module CodeToQuery
         query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
       ].freeze
 
+      POSTGRES_UNICODE_FUNCTION_IDENTIFIER = /
+        (?<![A-Z0-9_$])U&"(?<identifier>(?:""|[^"])*)"
+        (?:\s+UESCAPE\s+'(?<escape>[^'])')?
+        \s*\(
+      /ix
+
       def initialize(config, allow_tables: nil)
         @config = config
         @allow_tables = Array(allow_tables).compact.map(&:to_s)
@@ -29,6 +35,7 @@ module CodeToQuery
         check_dangerous_patterns!(normalized)
         check_required_limit!(normalized)
         check_table_allowlist!(normalized) if @allow_tables.any?
+        check_no_postgres_dynamic_query_functions!(normalized)
         check_no_literals!(normalized)
         check_no_dangerous_functions!(normalized)
         check_no_subqueries!(normalized) if @config.block_subqueries
@@ -266,7 +273,9 @@ module CodeToQuery
         DANGEROUS_FUNCTIONS.each do |func|
           raise SecurityError, "Dangerous function '#{func}' is not allowed" if sql.match?(/\b#{func}\s*\(/i)
         end
+      end
 
+      def check_no_postgres_dynamic_query_functions!(sql)
         return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
 
         POSTGRES_DYNAMIC_QUERY_FUNCTIONS.each do |func|
@@ -275,6 +284,61 @@ module CodeToQuery
           pattern = /(?:\b#{func}|"#{func}")\s*\(/i
           raise SecurityError, "Dangerous function '#{func}' is not allowed" if sql.match?(pattern)
         end
+
+        sql.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
+          match = Regexp.last_match
+          identifier = decode_postgres_unicode_identifier(match[:identifier], match[:escape] || '\\')
+          next unless POSTGRES_DYNAMIC_QUERY_FUNCTIONS.include?(identifier)
+
+          raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
+        end
+      end
+
+      def decode_postgres_unicode_identifier(identifier, escape)
+        return if escape.match?(/[0-9A-F+'"\s]/i)
+
+        characters = identifier.gsub('""', '"').chars
+        decoded = +''
+        index = 0
+
+        while index < characters.length
+          if characters[index] != escape
+            decoded << characters[index]
+            index += 1
+            next
+          end
+
+          codepoint, consumed = postgres_unicode_escape(characters, index, escape)
+          return unless codepoint
+
+          if codepoint.between?(0xD800, 0xDBFF)
+            low_surrogate, low_consumed = postgres_unicode_escape(characters, index + consumed, escape)
+            return unless low_surrogate&.between?(0xDC00, 0xDFFF)
+
+            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + low_surrogate - 0xDC00
+            consumed += low_consumed
+          end
+
+          decoded << codepoint.chr(Encoding::UTF_8)
+          index += consumed
+        end
+
+        decoded
+      rescue RangeError
+        nil
+      end
+
+      def postgres_unicode_escape(characters, index, escape)
+        return unless characters[index] == escape
+        return [escape.ord, 2] if characters[index + 1] == escape
+
+        extended = characters[index + 1] == '+'
+        digits = extended ? 6 : 4
+        start = index + (extended ? 2 : 1)
+        hexadecimal = characters[start, digits]&.join
+        return unless hexadecimal&.match?(/\A[0-9A-F]{#{digits}}\z/i)
+
+        [hexadecimal.to_i(16), digits + (extended ? 2 : 1)]
       end
 
       def check_no_subqueries!(sql)

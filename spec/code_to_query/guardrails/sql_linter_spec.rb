@@ -244,14 +244,38 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
             expect { linter.check!(sql) }.to raise_error(SecurityError), function_call
           end
         end
+
+        it 'blocks Unicode-escaped quoted identifiers for every dynamic-query function' do
+          calls = {
+            'query_to_xml' => 'U&"query_to_!0078ml" UESCAPE \'!\'',
+            'query_to_xmlschema' => 'public.U&"query_to_xmlschema" UESCAPE \'!\'',
+            'query_to_xml_and_xmlschema' => 'U&"query_to_!0078ml_and_xmlschema" UESCAPE \'!\''
+          }
+
+          calls.each do |function, function_call|
+            sql = "SELECT #{function_call}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function_call
+          end
+        end
+
+        it 'does not overmatch a longer Unicode quoted function identifier' do
+          sql = 'SELECT U&"query_to_xml_backup"($1) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
       end
 
       it 'does not apply the PostgreSQL dynamic-query denylist to other adapters' do
         mysql_config = stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2)
         mysql_linter = described_class.new(mysql_config, allow_tables: %w[users])
-        sql = 'SELECT query_to_xml($1, true, false, $2) FROM users LIMIT 10'
+        calls = ['query_to_xml', 'U&"query_to_\+000078ml"']
 
-        expect { mysql_linter.check!(sql) }.not_to raise_error
+        calls.each do |function_call|
+          sql = "SELECT #{function_call}($1, true, false, $2) FROM users LIMIT 10"
+
+          expect { mysql_linter.check!(sql) }.not_to raise_error
+        end
       end
     end
   end
