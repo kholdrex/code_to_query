@@ -137,6 +137,7 @@ module CodeToQuery
     def relationable?
       return false unless defined?(ActiveRecord::Base)
       return false unless @intent['type'] == 'select'
+      return false if @config.policy_adapter && !compiler_policy_contract?
       return false if compiler_only_subquery_policy_filters?
 
       !!infer_model_for_table(@intent['table'])

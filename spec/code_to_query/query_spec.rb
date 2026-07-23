@@ -1519,6 +1519,16 @@ RSpec.describe CodeToQuery::Query do
       expect(scope).to have_received(:limit).with(100)
     end
 
+    it 'returns nil for a directly constructed query when a policy adapter is configured' do
+      scope = double('scope')
+      allow(scope).to receive_messages(where: scope, order: scope, limit: scope)
+      build_scope_backed_user_model(scope)
+      config.policy_adapter = ->(_context) { { filters: [] } }
+
+      expect(query.to_relation).to be_nil
+      expect(scope).not_to have_received(:where)
+    end
+
     it 'returns nil when relation semantics would drop compiler-only subquery policy predicates' do
       scope = double('scope')
       allow(scope).to receive_messages(where: scope, order: scope, limit: scope)
@@ -1546,6 +1556,13 @@ RSpec.describe CodeToQuery::Query do
       build_scope_backed_question_model(double('scope'))
 
       expect(build_subquery_policy_query(config).relationable?).to be false
+    end
+
+    it 'returns false without a compiler policy contract when a policy adapter is configured' do
+      build_scope_backed_user_model(double('scope'))
+      config.policy_adapter = ->(_context) { { filters: [] } }
+
+      expect(query.relationable?).to be false
     end
   end
 
