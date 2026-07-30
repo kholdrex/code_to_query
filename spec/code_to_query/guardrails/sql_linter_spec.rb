@@ -211,6 +211,13 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
           expect { linter.check!(sql) }
             .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
         end
+
+        it 'rejects TABLE query expressions with backtick-quoted relations' do
+          sql = 'SELECT * FROM users WHERE EXISTS (TABLE `admin_secrets`) LIMIT 100'
+
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
+        end
       end
     end
 

@@ -182,8 +182,8 @@ module CodeToQuery
               type: :identifier, value: source[index...finish], quoted: true, unicode_quoted: true
             }
             index = finish
-          elsif searchable[index] == '"'
-            finish = quoted_identifier_finish(source, index)
+          elsif (delimiter = quoted_identifier_delimiter(searchable[index]))
+            finish = quoted_identifier_finish(source, index, delimiter)
             tokens << { type: :identifier, value: source[index...finish], quoted: true }
             index = finish
           elsif postgres_identifier_start?(searchable[index])
@@ -199,18 +199,23 @@ module CodeToQuery
         tokens
       end
 
-      def quoted_identifier_finish(source, index)
+      def quoted_identifier_finish(source, index, delimiter = '"')
         index += 1
         while index < source.length
-          if source[index] == '"' && source[index + 1] == '"'
+          if source[index] == delimiter && source[index + 1] == delimiter
             index += 2
-          elsif source[index] == '"'
+          elsif source[index] == delimiter
             return index + 1
           else
             index += 1
           end
         end
         source.length
+      end
+
+      def quoted_identifier_delimiter(character)
+        return '"' if character == '"'
+        return '`' if @adapter == :mysql && character == '`'
       end
 
       # PostgreSQL lexes U&"..." (with no whitespace around the ampersand) as

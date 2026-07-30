@@ -147,6 +147,13 @@ RSpec.describe CodeToQuery::Query::SqlScanner do
         expect(scanner.table_query_expression?(expression)).to be(true), expression
       end
     end
+
+    it 'recognizes MySQL backtick-quoted TABLE relations when configured for MySQL' do
+      mysql_scanner = described_class.new(adapter: :mysql)
+
+      expect(mysql_scanner.table_query_expression?('SELECT EXISTS (TABLE `admin_secrets`) LIMIT 1')).to be true
+      expect(mysql_scanner.table_query_expression?('SELECT EXISTS (TABLE `schema`.`admin_secrets`) LIMIT 1')).to be true
+    end
   end
 
   describe '#policy_predicate_bind_numbers' do

@@ -77,7 +77,7 @@ module CodeToQuery
                    when :mysql then 'MySQL'
                    else return
                    end
-        return unless Query::SqlScanner.new.table_query_expression?(sql)
+        return unless Query::SqlScanner.new(adapter: @config.adapter).table_query_expression?(sql)
 
         raise SecurityError, "#{database} TABLE query expressions are not supported"
       end
