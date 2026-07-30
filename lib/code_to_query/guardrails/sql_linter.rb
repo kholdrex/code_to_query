@@ -72,10 +72,14 @@ module CodeToQuery
       end
 
       def check_unsupported_table_query_expressions!(sql)
-        return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
+        database = case @config.adapter.to_sym
+                   when :postgres, :postgresql then 'PostgreSQL'
+                   when :mysql then 'MySQL'
+                   else return
+                   end
         return unless Query::SqlScanner.new.table_query_expression?(sql)
 
-        raise SecurityError, 'PostgreSQL TABLE query expressions are not supported'
+        raise SecurityError, "#{database} TABLE query expressions are not supported"
       end
 
       def check_dangerous_patterns!(sql)

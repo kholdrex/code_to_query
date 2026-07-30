@@ -197,6 +197,20 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         it 'allows an exact-case quoted table' do
           expect { linter.check!('SELECT * FROM `users` LIMIT 100') }.not_to raise_error
         end
+
+        it 'rejects TABLE query expressions inside IN subqueries' do
+          sql = 'SELECT * FROM users WHERE id IN (TABLE admin_secrets) LIMIT 100'
+
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
+        end
+
+        it 'rejects TABLE query expressions used as nested set-operation operands' do
+          sql = 'SELECT * FROM users WHERE EXISTS (SELECT * FROM users UNION TABLE admin_secrets) LIMIT 100'
+
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
+        end
       end
     end
 
