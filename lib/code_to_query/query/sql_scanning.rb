@@ -215,7 +215,8 @@ module CodeToQuery
 
       def quoted_identifier_delimiter(character)
         return '"' if character == '"'
-        return '`' if @adapter == :mysql && character == '`'
+
+        '`' if @adapter == :mysql && character == '`'
       end
 
       # PostgreSQL lexes U&"..." (with no whitespace around the ampersand) as
