@@ -648,6 +648,32 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be true
     end
 
+    it 'accepts a self-referential EXISTS on the allowlisted base intent table' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "questions" WHERE "questions"."parent_id" = "questions"."id") LIMIT 100',
+        params: {},
+        bind_spec: [],
+        intent: {
+          'table' => 'questions',
+          'type' => 'select',
+          'filters' => [
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'questions',
+              'fk_column' => 'parent_id',
+              'base_column' => 'id',
+              'related_filters' => []
+            }
+          ]
+        },
+        allow_tables: ['questions'],
+        config: config
+      )
+
+      expect(q.safe?).to be true
+    end
+
     it 'rejects an undeclared EXISTS table even when the top-level allowlist permits it' do
       q = described_class.new(
         sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers")',

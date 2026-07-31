@@ -453,8 +453,10 @@ module CodeToQuery
       policy_scoped_related_tables = declared_related_tables
       return unless allowlist_sources_present?
 
+      base_intent_table = @intent['table']&.to_s
       extract_table_identifiers(strip_exists_subqueries(@sql)).each do |table|
         next unless policy_scoped_related_tables.any? { |allowed| table_identifier_allowed?(table, allowed) }
+        next if base_intent_table && table_identifier_allowed?(table, base_intent_table)
 
         raise SecurityError,
               "Table '#{table.name}' is only allowed inside declared EXISTS/NOT EXISTS filters"
