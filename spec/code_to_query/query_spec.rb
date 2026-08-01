@@ -648,30 +648,69 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be true
     end
 
-    it 'accepts a self-referential EXISTS on the allowlisted base intent table' do
+    it 'accepts a correlated self-referential EXISTS on the allowlisted SQL base table' do
+      {
+        postgres: 'SELECT * FROM "questions" AS "parent" WHERE EXISTS (SELECT 1 FROM "questions" AS "child" WHERE "child"."parent_id" = "parent"."id") LIMIT 100',
+        mysql: 'SELECT * FROM `questions` AS `parent` WHERE EXISTS (SELECT 1 FROM `questions` AS `child` WHERE `child`.`parent_id` = `parent`.`id`) LIMIT 100'
+      }.each do |adapter, sql|
+        q = described_class.new(
+          sql: sql,
+          params: {},
+          bind_spec: [],
+          intent: {
+            'table' => 'questions',
+            'type' => 'select',
+            'filters' => [
+              {
+                'column' => 'id',
+                'op' => 'exists',
+                'related_table' => 'questions',
+                'fk_column' => 'parent_id',
+                'base_column' => 'id',
+                'related_filters' => []
+              }
+            ]
+          },
+          allow_tables: ['questions'],
+          config: stub_config(adapter: adapter)
+        )
+
+        expect(q.safe?).to be(true), "expected correlated #{adapter} self-reference to be accepted"
+      end
+    end
+
+    it 'does not let a mismatched but allowlisted intent table exempt a related-table JOIN' do
       q = described_class.new(
-        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "questions" WHERE "questions"."parent_id" = "questions"."id") LIMIT 100',
+        sql: 'SELECT * FROM "questions" JOIN "answers" ON "answers"."question_id" = "questions"."id" WHERE EXISTS (SELECT 1 FROM "answers") LIMIT 100',
         params: {},
         bind_spec: [],
         intent: {
-          'table' => 'questions',
+          'table' => 'answers',
           'type' => 'select',
-          'filters' => [
-            {
-              'column' => 'id',
-              'op' => 'exists',
-              'related_table' => 'questions',
-              'fk_column' => 'parent_id',
-              'base_column' => 'id',
-              'related_filters' => []
-            }
-          ]
+          'filters' => [{ 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers' }]
         },
-        allow_tables: ['questions'],
+        allow_tables: %w[questions answers],
         config: config
       )
 
-      expect(q.safe?).to be true
+      expect(q.safe?).to be false
+    end
+
+    it 'fails closed when an ambiguous FROM list includes the allowlisted intent table' do
+      q = described_class.new(
+        sql: 'SELECT * FROM "questions", "answers" WHERE EXISTS (SELECT 1 FROM "answers") LIMIT 100',
+        params: {},
+        bind_spec: [],
+        intent: {
+          'table' => 'answers',
+          'type' => 'select',
+          'filters' => [{ 'column' => 'id', 'op' => 'exists', 'related_table' => 'answers' }]
+        },
+        allow_tables: %w[questions answers],
+        config: config
+      )
+
+      expect(q.safe?).to be false
     end
 
     it 'rejects a self-referential intent table outside the top-level allowlist' do

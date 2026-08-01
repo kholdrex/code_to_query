@@ -622,6 +622,23 @@ module CodeToQuery
         extract_table_identifiers(sql).map(&:name).uniq
       end
 
+      def extract_base_table_identifier(sql)
+        source = sql.to_s
+        searchable = mask_sql_literals_comments_and_identifier_contents(source)
+        matches = searchable.to_enum(
+          :scan,
+          /\bFROM\b\s*(.+?)(?=\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bHAVING\b|\bUNION\b|#{join_clause_pattern}|\z)/im
+        ).map { Regexp.last_match }
+        return unless matches.one?
+
+        match = matches.first
+        masked_clause = searchable[match.begin(1)...match.end(1)]
+        return if masked_clause.include?(',')
+
+        reference = source[match.begin(1)...match.end(1)]
+        extract_table_reference_identifier(reference)
+      end
+
       def extract_table_identifiers(sql)
         source = sql.to_s
         searchable = mask_sql_literals_comments_and_identifier_contents(source)
