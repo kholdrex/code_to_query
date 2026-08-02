@@ -13,17 +13,19 @@ module CodeToQuery
   class Compiler
     # Policy evidence is an opaque capability. Its constructor and immutable
     # snapshot are private, so caller-supplied metadata can never stand in for
-    # a successful policy compilation. The issuing adapter is retained by
-    # reference so its identity cannot be recycled while the capability lives.
+    # a successful policy compilation. The issuing configuration and adapter
+    # are retained by reference so their identities cannot be recycled while
+    # the capability lives.
     class PolicyContract
-      def initialize(snapshot, policy_adapter)
+      def initialize(snapshot, policy_adapter, config)
         @snapshot = snapshot
         @policy_adapter = policy_adapter
+        @config = config
         freeze
       end
 
-      attr_reader :snapshot, :policy_adapter
-      private :snapshot, :policy_adapter
+      attr_reader :snapshot, :policy_adapter, :config
+      private :snapshot, :policy_adapter, :config
       private_class_method :new
     end
     private_constant :PolicyContract
@@ -51,6 +53,7 @@ module CodeToQuery
 
       def valid_policy_contract?(contract, sql:, params:, bind_spec:, intent:, allow_tables:, config:)
         return false unless contract.instance_of?(PolicyContract)
+        return false unless contract.send(:config).equal?(config)
         return false unless contract.send(:policy_adapter).equal?(config.policy_adapter)
 
         contract.send(:snapshot) == policy_contract_snapshot(
@@ -65,7 +68,7 @@ module CodeToQuery
           sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
           intent: result[:intent], allow_tables: allow_tables, config: config
         )
-        PolicyContract.send(:new, snapshot, policy_adapter)
+        PolicyContract.send(:new, snapshot, policy_adapter, config)
       end
 
       def policy_contract_snapshot(sql:, params:, bind_spec:, intent:, allow_tables:, config:)
@@ -75,7 +78,6 @@ module CodeToQuery
           bind_spec: bind_spec,
           intent: intent,
           allow_tables: allow_tables,
-          config_identity: config.__id__,
           adapter: config.adapter,
           policy_adapter_fail_open: config.respond_to?(:policy_adapter_fail_open) && config.policy_adapter_fail_open
         )

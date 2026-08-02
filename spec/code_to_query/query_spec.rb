@@ -114,6 +114,22 @@ RSpec.describe CodeToQuery::Query do
     )
   end
 
+  def build_policy_contract_with_weak_config(config)
+    Thread.new do
+      policy_adapter = Object.new
+      def policy_adapter.call(_user, **) = { allowed_tables: ['users'] }
+
+      issuing_config = config.class.send(:new)
+      issuing_config.policy_adapter = policy_adapter
+      compiled = CodeToQuery::Compiler.new(issuing_config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
+      )
+
+      [compiled[:policy_contract], WeakRef.new(issuing_config)]
+    end.value
+  end
+
   describe '#sql' do
     it 'returns the SQL string' do
       expect(query.sql).to eq(sql)
@@ -435,6 +451,35 @@ RSpec.describe CodeToQuery::Query do
       expect(q.safe?).to be true
     ensure
       config.policy_adapter = nil
+    end
+
+    it 'accepts a policy contract only with the exact configuration object that issued it' do
+      config.policy_adapter = ->(_user, **) { { allowed_tables: ['users'] } }
+      compiled = CodeToQuery::Compiler.new(config).compile(
+        { 'table' => 'users', 'type' => 'select', 'columns' => ['*'], 'limit' => 100 },
+        allow_tables: ['users']
+      )
+      attributes = {
+        sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+        intent: compiled[:intent], allow_tables: ['users'], policy_contract: compiled[:policy_contract]
+      }
+      replacement_config = config.class.send(:new)
+      replacement_config.policy_adapter = config.policy_adapter
+
+      expect(described_class.new(**attributes, config: config).safe?).to be true
+      expect(described_class.new(**attributes, config: replacement_config).safe?).to be false
+    ensure
+      config.policy_adapter = nil
+    end
+
+    it 'retains the issuing configuration for the policy contract lifetime' do
+      policy_contract, issuing_config_ref = build_policy_contract_with_weak_config(config)
+
+      50_000.times { Object.new }
+      GC.start(full_mark: true, immediate_sweep: true)
+
+      expect(policy_contract).not_to be_nil
+      expect(issuing_config_ref).to be_weakref_alive
     end
 
     it 'keeps nonempty policy evidence alive while the query is alive across forced GC' do
