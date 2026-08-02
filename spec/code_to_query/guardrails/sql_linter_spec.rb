@@ -17,6 +17,24 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         sql = 'SELECT * FROM "users" WHERE "active" = $1 LIMIT 50'
         expect { linter.check!(sql) }.not_to raise_error
       end
+
+      it 'passes an ordinary table identifier inside a parenthesized expression' do
+        sql = 'SELECT (table IS NULL) FROM users LIMIT 1'
+
+        expect { linter.check!(sql) }.not_to raise_error
+      end
+
+      it 'passes BETWEEN on an ordinary table identifier' do
+        sql = 'SELECT (table BETWEEN $1 AND $2) FROM users LIMIT 1'
+
+        expect { linter.check!(sql) }.not_to raise_error
+      end
+
+      it 'passes AT TIME ZONE on an ordinary table identifier' do
+        sql = 'SELECT (table AT TIME ZONE $1) FROM users LIMIT 1'
+
+        expect { linter.check!(sql) }.not_to raise_error
+      end
     end
 
     context 'with dangerous queries' do
@@ -74,9 +92,132 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
         expect { linter.check!(sql) }.to raise_error(SecurityError, /not in the allowed list/)
       end
 
+      it 'does not allow PostgreSQL ONLY to hide a non-allowlisted relation' do
+        only_linter = described_class.new(config, allow_tables: ['only'])
+
+        expect { only_linter.check!('SELECT * FROM ONLY "admin_secrets" LIMIT 100') }
+          .to raise_error(SecurityError, /admin_secrets.*not in the allowed list/)
+      end
+
+      it 'allows an allowlisted quoted relation after PostgreSQL ONLY' do
+        expect { linter.check!('SELECT * FROM ONLY "users" LIMIT 100') }.not_to raise_error
+      end
+
+      it 'does not allow PostgreSQL JOIN ONLY to hide a non-allowlisted relation' do
+        only_linter = described_class.new(config, allow_tables: %w[users only])
+
+        expect { only_linter.check!('SELECT * FROM users JOIN ONLY admin_secrets ON TRUE LIMIT 100') }
+          .to raise_error(SecurityError, /admin_secrets.*not in the allowed list/)
+      end
+
       it 'validates JOIN table allowlist' do
         sql = 'SELECT * FROM "users" JOIN "admin_secrets" ON users.id = admin_secrets.user_id LIMIT 100'
         expect { linter.check!(sql) }.to raise_error(SecurityError, /not in the allowed list/)
+      end
+
+      it 'rejects unsupported PostgreSQL TABLE query expressions inside subqueries' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (TABLE "admin_secrets") LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects TABLE query expressions used as nested set-operation operands' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (SELECT * FROM "users" UNION TABLE "admin_secrets") LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects TABLE query expressions with Unicode PostgreSQL identifiers' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (TABLE évil) LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects TABLE query expressions with PostgreSQL Unicode-escaped quoted identifiers' do
+        expressions = [
+          'SELECT EXISTS (TABLE U&"secrets") LIMIT 1',
+          %q(SELECT EXISTS (TABLE U&"s\0065crets") LIMIT 1),
+          'SELECT EXISTS (TABLE U&"secr""ets") LIMIT 1'
+        ]
+
+        expressions.each do |sql|
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /TABLE query expressions are not supported/), sql
+        end
+      end
+
+      it 'rejects nested TABLE ONLY expressions across comments and whitespace' do
+        sql = "SELECT * FROM \"users\" WHERE EXISTS ((TABLE /* gap */ ONLY\n(évil))) LIMIT 10"
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects a TABLE query expression after a CTE definition' do
+        sql = 'SELECT * FROM "users" WHERE EXISTS (WITH q AS (SELECT 1) /* gap */ TABLE évil) LIMIT 10'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'rejects a TABLE query expression with an emoji PostgreSQL identifier' do
+        sql = 'SELECT EXISTS (WITH q AS (SELECT 1) TABLE 💣) LIMIT 1'
+
+        expect { linter.check!(sql) }.to raise_error(SecurityError, /TABLE query expressions are not supported/)
+      end
+
+      it 'does not treat table in identifiers, strings, or comments as a TABLE query expression' do
+        scanner = CodeToQuery::Query::SqlScanner.new
+
+        expect(scanner.table_query_expression?('SELECT table FROM users')).to be false
+        expect(scanner.table_query_expression?('SELECT table.id FROM users AS table')).to be false
+        expect(scanner.table_query_expression?('SELECT users.table FROM users')).to be false
+        expect(scanner.table_query_expression?('SELECT 1 AS table FROM users')).to be false
+        expect(scanner.table_query_expression?('WITH q AS (SELECT 1) SELECT table FROM q AS table')).to be false
+        expect(scanner.table_query_expression?('SELECT "table" FROM users')).to be false
+        expect(scanner.table_query_expression?("SELECT 'TABLE évil' FROM users")).to be false
+        expect(scanner.table_query_expression?('SELECT 1 /* TABLE évil */ FROM users')).to be false
+      end
+
+      context 'with MySQL identifiers' do
+        let(:config) { stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2) }
+
+        it 'rejects an unquoted case mismatch' do
+          expect { linter.check!('SELECT * FROM USERS LIMIT 100') }
+            .to raise_error(SecurityError, /not in the allowed list/)
+        end
+
+        it 'rejects a quoted case mismatch' do
+          expect { linter.check!('SELECT * FROM `USERS` LIMIT 100') }
+            .to raise_error(SecurityError, /not in the allowed list/)
+        end
+
+        it 'allows an exact-case unquoted table' do
+          expect { linter.check!('SELECT * FROM users LIMIT 100') }.not_to raise_error
+        end
+
+        it 'allows an exact-case quoted table' do
+          expect { linter.check!('SELECT * FROM `users` LIMIT 100') }.not_to raise_error
+        end
+
+        it 'rejects TABLE query expressions inside IN subqueries' do
+          sql = 'SELECT * FROM users WHERE id IN (TABLE admin_secrets) LIMIT 100'
+
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
+        end
+
+        it 'rejects TABLE query expressions used as nested set-operation operands' do
+          sql = 'SELECT * FROM users WHERE EXISTS (SELECT * FROM users UNION TABLE admin_secrets) LIMIT 100'
+
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
+        end
+
+        it 'rejects TABLE query expressions with backtick-quoted relations' do
+          sql = 'SELECT * FROM users WHERE EXISTS (TABLE `admin_secrets`) LIMIT 100'
+
+          expect { linter.check!(sql) }
+            .to raise_error(SecurityError, /MySQL TABLE query expressions are not supported/)
+        end
       end
     end
 
@@ -112,6 +253,204 @@ RSpec.describe CodeToQuery::Guardrails::SqlLinter do
       it 'blocks schema introspection' do
         sql = 'SELECT * FROM information_schema.tables LIMIT 100'
         expect { linter.check!(sql) }.to raise_error(SecurityError, /information_schema/)
+      end
+
+      context 'with PostgreSQL server-side query execution' do
+        let(:config) { stub_config(adapter: :postgres, max_limit: 1000, max_joins: 2) }
+
+        let(:xml_export_functions) do
+          %w[
+            table_to_xml table_to_xmlschema table_to_xml_and_xmlschema
+            query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
+            cursor_to_xml cursor_to_xmlschema
+            schema_to_xml schema_to_xmlschema schema_to_xml_and_xmlschema
+            database_to_xml database_to_xmlschema database_to_xml_and_xmlschema
+          ]
+        end
+
+        it 'blocks query_to_xml from hiding a non-allowlisted table in dollar-quoted SQL' do
+          sql = 'SELECT query_to_xml($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.to raise_error(SecurityError, /query_to_xml/)
+        end
+
+        it 'blocks query_to_xml schema-generation siblings' do
+          functions = %w[query_to_xmlschema query_to_xml_and_xmlschema]
+
+          functions.each do |function|
+            sql = "SELECT #{function}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function
+          end
+        end
+
+        it 'blocks direct relation, schema, database, and cursor export calls with their real signatures' do
+          calls = [
+            'table_to_xml(to_regclass($1), true, false, $2)',
+            'schema_to_xml($1, true, false, $2)',
+            'database_to_xml(true, false, $1)',
+            'cursor_to_xml($1, 100, true, false, $2)'
+          ]
+
+          calls.each do |function_call|
+            sql = "SELECT #{function_call} FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError), function_call
+          end
+        end
+
+        it 'blocks the complete built-in relation, query, cursor, schema, and database XML export family' do
+          xml_export_functions.each do |function|
+            sql = "SELECT #{function}($1) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function
+          end
+        end
+
+        it 'blocks every XML export function across quoted and schema-qualified forms' do
+          xml_export_functions.each do |function|
+            [
+              %("#{function}"),
+              "public.#{function}",
+              %(public."#{function}")
+            ].each do |function_call|
+              sql = "SELECT #{function_call}($1) FROM users LIMIT 10"
+
+              expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function_call
+            end
+          end
+        end
+
+        it 'blocks every XML export function as a Unicode-escaped quoted identifier' do
+          xml_export_functions.each do |function|
+            encoded = function.sub('x', '!0078')
+            calls = [
+              %(U&"#{function}"),
+              %(public.U&"#{encoded}" UESCAPE '!')
+            ]
+
+            calls.each do |function_call|
+              sql = "SELECT #{function_call}($1) FROM users LIMIT 10"
+
+              expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function_call
+            end
+          end
+        end
+
+        it 'blocks schema-qualified and quoted query_to_xml calls' do
+          calls = ['pg_catalog.query_to_xml', 'pg_catalog."query_to_xml"']
+
+          calls.each do |function_call|
+            sql = "SELECT #{function_call}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError), function_call
+          end
+        end
+
+        it 'blocks Unicode-escaped quoted identifiers for every dynamic-query function' do
+          calls = {
+            'query_to_xml' => 'U&"query_to_!0078ml" UESCAPE \'!\'',
+            'query_to_xmlschema' => 'public.U&"query_to_xmlschema" UESCAPE \'!\'',
+            'query_to_xml_and_xmlschema' => 'U&"query_to_!0078ml_and_xmlschema" UESCAPE \'!\''
+          }
+
+          calls.each do |function, function_call|
+            sql = "SELECT #{function_call}($q$TABLE secrets$q$, true, false, $x$$x$) FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /#{function}/), function_call
+          end
+        end
+
+        it 'blocks Unicode identifiers with escape string UESCAPE clauses beside parameterized LIKE operators' do
+          %w[LIKE ILIKE].each do |operator|
+            sql = %(SELECT U&"query_to_!0078ml" UESCAPE E'!'($q$TABLE secrets$q$, true, false, $x$$x$) FROM users WHERE name #{operator} $3 LIMIT 10)
+
+            expect { linter.check!(sql) }.to raise_error(SecurityError, /query_to_xml/), operator
+          end
+        end
+
+        it 'accepts standard and escape-string UESCAPE forms for benign Unicode function identifiers' do
+          ["'!'", "E'!'", "e'!'"].each do |uescape|
+            sql = %(SELECT U&"safe_function" UESCAPE #{uescape}($1) FROM users WHERE name LIKE $2 LIMIT 10)
+
+            expect { linter.check!(sql) }.not_to raise_error, uescape
+          end
+        end
+
+        it 'fails closed when a Unicode function identifier UESCAPE is inconclusive' do
+          sql = %(SELECT U&"safe_function" UESCAPE E'!!'($1) FROM users WHERE name LIKE $2 LIMIT 10)
+
+          expect { linter.check!(sql) }.to raise_error(SecurityError, /Inconclusive PostgreSQL Unicode/)
+        end
+
+        it 'does not treat denied-looking calls in dollar-quoted literals as functions' do
+          calls = ['query_to_xml($1)', '"query_to_xml"($1)']
+
+          calls.each do |call|
+            sql = "SELECT $q$#{call}$q$ FROM users LIMIT 10"
+
+            expect { linter.check!(sql) }.not_to raise_error, call
+          end
+        end
+
+        it 'does not overmatch denied text after a doubled quote in a quoted identifier' do
+          sql = 'SELECT "prefix""query_to_xml"($1) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
+        it 'does not overmatch denied text after a doubled quote in a Unicode quoted identifier' do
+          sql = 'SELECT U&"prefix""query_to_xml"($1) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
+        it 'does not overmatch a longer Unicode quoted function identifier' do
+          sql = 'SELECT U&"query_to_xml_backup"($1) FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
+        it 'does not overmatch longer identifiers based on any XML export function name' do
+          xml_export_functions.each do |function|
+            calls = [
+              "#{function}_backup",
+              %("#{function}_backup"),
+              "public.#{function}_backup",
+              %(public.U&"#{function}_backup")
+            ]
+
+            calls.each do |function_call|
+              sql = "SELECT #{function_call}($1) FROM users LIMIT 10"
+
+              expect { linter.check!(sql) }.not_to raise_error, function_call
+            end
+          end
+        end
+
+        it 'does not scan denied-looking text inside an ordinary quoted identifier as an unquoted call' do
+          sql = 'SELECT "prefix query_to_xml ( suffix" FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+
+        it 'does not scan denied-looking text inside a Unicode quoted identifier as an unquoted call' do
+          sql = 'SELECT U&"prefix query_to_xml ( suffix" FROM users LIMIT 10'
+
+          expect { linter.check!(sql) }.not_to raise_error
+        end
+      end
+
+      it 'does not apply the PostgreSQL server-side XML export denylist to other adapters' do
+        mysql_config = stub_config(adapter: :mysql, max_limit: 1000, max_joins: 2)
+        mysql_linter = described_class.new(mysql_config, allow_tables: %w[users])
+        calls = ['query_to_xml', 'U&"query_to_\+000078ml"']
+
+        calls.each do |function_call|
+          sql = "SELECT #{function_call}($1, true, false, $2) FROM users LIMIT 10"
+
+          expect { mysql_linter.check!(sql) }.not_to raise_error
+        end
       end
     end
   end

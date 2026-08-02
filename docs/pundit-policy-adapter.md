@@ -27,6 +27,12 @@ Keep these boundaries explicit:
 - **Pundit remains authoritative.** Use Pundit to decide whether the user can access the reporting surface. Do not use natural-language prompts as authorization input.
 - **Keep logs narrow.** Prefer logging table names, policy key names, and decisions. Avoid logging raw prompts, row data, full bind values, credentials, or full generated schema context in normal application logs.
 
+### Query lifecycle and compatibility
+
+- With a `policy_adapter` configured, obtain executable queries through `CodeToQuery.ask` or the compiler path. Policy compilation issues an opaque contract that callers cannot construct; a directly instantiated `CodeToQuery::Query` lacks that evidence and fails closed at safety checks and execution.
+- A compiled query's policy contract is bound to the exact policy adapter object and configuration instance used to compile it, including the captured database adapter and policy fail-open setting. Replacing the policy adapter or changing that relevant configuration invalidates the query. Recompile instead of retaining policy-bearing queries across configuration changes or application reloads.
+- The public `Query#sql`, `#params`, `#intent`, and `#metrics` readers return detached deep copies. Mutating those values does not alter the immutable state used for safety checks or execution, and repeated reads may allocate new objects.
+
 ## Lambda adapter for tenant, account, and user predicates
 
 This example keeps table and column exposure small and derives row predicates from trusted application state. It raises on missing users, unknown tables, and denied policies so CodeToQuery fails closed. Define the custom Pundit predicates such as `code_to_query?`, `view_all_tickets?`, and `view_account_users?` on the relevant policies before using this shape.

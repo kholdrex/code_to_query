@@ -24,6 +24,43 @@ RSpec.describe CodeToQuery do
       stub_config(stub_llm: true, provider: :local)
     end
 
+    let(:exists_related_filter) do
+      {
+        'column' => 'id',
+        'op' => 'exists',
+        'related_table' => 'answers',
+        'fk_column' => 'question_id',
+        'base_column' => 'id',
+        'related_filters' => []
+      }
+    end
+
+    def stub_ask_pipeline(compiled_intent:, allow_tables:, sql:, linter_error: nil)
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+      linter = instance_double(CodeToQuery::Guardrails::SqlLinter)
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(CodeToQuery::Guardrails::SqlLinter).to receive(:new)
+        .with(described_class.config, allow_tables: allow_tables)
+        .and_return(linter)
+
+      allow(planner).to receive(:plan).and_return(compiled_intent)
+      allow(validator).to receive(:validate).and_return(compiled_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: sql,
+        params: {},
+        bind_spec: [],
+        intent: compiled_intent
+      )
+      allow(linter).to receive(:check!) do
+        raise linter_error if linter_error
+      end
+    end
+
     # rubocop:disable RSpec/MultipleExpectations,RSpec/ExampleLength
     it 'emits non-sensitive pipeline instrumentation' do
       events = []
@@ -67,6 +104,191 @@ RSpec.describe CodeToQuery do
     it 'returns a Query object' do
       query = described_class.ask(prompt: 'Get users', allow_tables: ['users'])
       expect(query).to be_a(CodeToQuery::Query)
+    end
+
+    it 'preserves compiler-augmented intent on the returned query' do
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+      linter = instance_double(CodeToQuery::Guardrails::SqlLinter)
+
+      compiled_intent = sample_intent.merge(
+        'filters' => [
+          { 'column' => 'tenant_id', 'op' => '=', 'param' => 'policy_tenant_id' }
+        ],
+        'params' => { 'policy_tenant_id' => 42 }
+      )
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(CodeToQuery::Guardrails::SqlLinter).to receive(:new).and_return(linter)
+
+      allow(planner).to receive(:plan).and_return(sample_intent)
+      allow(validator).to receive(:validate).and_return(sample_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT users.* FROM users WHERE users.tenant_id = $1',
+        params: { 'policy_tenant_id' => 42 },
+        bind_spec: [{ key: 'policy_tenant_id', column: 'tenant_id', cast: nil }],
+        intent: compiled_intent
+      )
+      allow(linter).to receive(:check!)
+
+      query = described_class.ask(prompt: 'Get users', allow_tables: ['users'])
+
+      expect(query.intent).to eq(compiled_intent)
+    end
+
+    it 'rejects EXISTS related tables unless they are explicitly allowed' do
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [exists_related_filter]
+      }
+
+      stub_ask_pipeline(
+        compiled_intent: compiled_intent,
+        allow_tables: ['questions'],
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        linter_error: SecurityError.new("Table 'answers' is not in the allowed list: questions")
+      )
+
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
+        .to raise_error(SecurityError, /allowed list/i)
+    end
+
+    it 'rejects top-level lateral derived tables that reference unallowed tables' do
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [exists_related_filter]
+      }
+
+      stub_ask_pipeline(
+        compiled_intent: compiled_intent,
+        allow_tables: ['questions'],
+        sql: 'SELECT * FROM "questions" JOIN LATERAL (SELECT * FROM "answers") leaked ON TRUE WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        linter_error: SecurityError.new('Top-level derived tables are not allowed')
+      )
+
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
+        .to raise_error(SecurityError, /derived tables are not allowed/i)
+    end
+
+    it 'does not invent a partial allowlist when ask is called without allow_tables' do
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [exists_related_filter]
+      }
+
+      stub_ask_pipeline(
+        compiled_intent: compiled_intent,
+        allow_tables: nil,
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")'
+      )
+
+      expect { described_class.ask(prompt: 'Get questions') }.not_to raise_error
+    end
+
+    it 'does not widen an explicit caller allowlist through the ask pipeline' do
+      intent = {
+        'table' => 'questions', 'type' => 'select', 'columns' => ['*'],
+        'filters' => [exists_related_filter], 'limit' => 100, 'params' => {}
+      }
+      planner = instance_double(CodeToQuery::Planner, plan: intent)
+      validator = instance_double(CodeToQuery::Validator, validate: intent)
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      described_class.config.policy_adapter = lambda do |_user, **context|
+        if context[:table] == 'questions'
+          { allowed_tables: %w[questions answers] }
+        else
+          { allowed_tables: ['answers'], enforced_predicates: { tenant_id: 42 } }
+        end
+      end
+
+      expect { described_class.ask(prompt: 'Get questions', allow_tables: ['questions']) }
+        .to raise_error(SecurityError, /allowed list/i)
+    end
+
+    it 'rejects EXISTS related tables that fall outside the policy adapter allowlist' do
+      planner = instance_double(CodeToQuery::Planner)
+      validator = instance_double(CodeToQuery::Validator)
+      compiler = instance_double(CodeToQuery::Compiler)
+
+      compiled_intent = {
+        'table' => 'questions',
+        'type' => 'select',
+        'filters' => [exists_related_filter],
+        '__policy_allowed_tables' => ['questions']
+      }
+
+      allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+      allow(CodeToQuery::Validator).to receive(:new).and_return(validator)
+      allow(CodeToQuery::Compiler).to receive(:new).and_return(compiler)
+      allow(planner).to receive(:plan).and_return(compiled_intent)
+      allow(validator).to receive(:validate).and_return(compiled_intent)
+      allow(compiler).to receive(:compile).and_return(
+        sql: 'SELECT * FROM "questions" WHERE EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id")',
+        params: {},
+        bind_spec: [],
+        intent: compiled_intent
+      )
+
+      expect { described_class.ask(prompt: 'Get questions') }
+        .to raise_error(SecurityError, /allowed list/i)
+    end
+
+    context 'with table-scoped policy column metadata for related filters' do
+      let(:policy_calls) { [] }
+
+      before do
+        described_class.config.policy_adapter = lambda do |_user, **context|
+          table = context.fetch(:table)
+          policy_calls << table
+          columns = table == 'questions' ? ['id'] : %w[question_id status]
+
+          { allowed_columns: { table => columns } }
+        end
+      end
+
+      def ask_with_related_policy_filter(operation:, fk_column: 'question_id', related_columns: ['status'])
+        intent = {
+          'type' => 'select', 'table' => 'questions', 'columns' => ['id'],
+          'filters' => [{
+            'op' => operation, 'related_table' => 'answers',
+            'fk_column' => fk_column, 'base_column' => 'id',
+            'related_filters' => related_columns.map.with_index do |column, index|
+              { 'column' => column, 'op' => '=', 'param' => "answer_filter_#{index}" }
+            end
+          }],
+          'params' => related_columns.each_index.to_h { |index| ["answer_filter_#{index}", index] }
+        }
+        planner = instance_double(CodeToQuery::Planner, plan: intent)
+        allow(CodeToQuery::Planner).to receive(:new).and_return(planner)
+
+        described_class.ask(
+          prompt: 'Get questions by answer attributes',
+          allow_tables: %w[questions answers]
+        )
+      end
+
+      %w[exists not_exists].each do |operation|
+        it "rejects a disallowed related fk_column for #{operation}" do
+          expect do
+            ask_with_related_policy_filter(operation: operation, fk_column: 'secret_question_id')
+          end.to raise_error(ArgumentError, /column 'secret_question_id' not permitted on 'answers'/)
+          expect(policy_calls).to eq(%w[questions questions answers])
+        end
+
+        it "checks every related filter column for #{operation}" do
+          expect do
+            ask_with_related_policy_filter(operation: operation, related_columns: %w[status secret])
+          end.to raise_error(ArgumentError, /filter column 'secret' not permitted on 'answers'/)
+          expect(policy_calls).to eq(%w[questions questions answers])
+        end
+      end
     end
 
     # rubocop:disable RSpec/ExampleLength

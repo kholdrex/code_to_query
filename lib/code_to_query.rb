@@ -12,6 +12,8 @@ require_relative 'code_to_query/version'
 require_relative 'code_to_query/configuration'
 require_relative 'code_to_query/errors'
 require_relative 'code_to_query/instrumentation'
+require_relative 'code_to_query/identifier_semantics'
+require_relative 'code_to_query/policy_adapter_invoker'
 require_relative 'code_to_query/providers/base'
 require_relative 'code_to_query/providers/openai'
 require_relative 'code_to_query/providers/local'
@@ -110,7 +112,9 @@ module CodeToQuery
       policy_applied: false
     }
     compiled = Instrumentation.instrument(:compile, compile_payload) do
-      compile_result = Compiler.new(config).compile(validated_intent, current_user: current_user)
+      compile_result = Compiler.new(config).compile(
+        validated_intent, current_user: current_user, allow_tables: allow_tables
+      )
       compile_payload[:policy_applied] = policy_applied_from_bind_spec?(compile_result[:bind_spec])
       compile_result
     end
@@ -124,9 +128,13 @@ module CodeToQuery
       row_limit: validated_intent['limit'],
       policy_applied: policy_applied
     }
+    query = Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
+                      intent: compiled[:intent] || validated_intent, allow_tables: allow_tables, config: config,
+                      policy_contract: compiled[:policy_contract])
+
     begin
       Instrumentation.instrument(:lint, **lint_payload) do
-        Guardrails::SqlLinter.new(config, allow_tables: allow_tables).check!(compiled[:sql])
+        query.send(:lint_sql!)
       end
     rescue SecurityError => e
       Instrumentation.instrument(
@@ -141,8 +149,7 @@ module CodeToQuery
       raise
     end
 
-    Query.new(sql: compiled[:sql], params: compiled[:params], bind_spec: compiled[:bind_spec],
-              intent: validated_intent, allow_tables: allow_tables, config: config)
+    query
   end
 
   def self.query_shape(intent)

@@ -31,6 +31,35 @@ RSpec.describe CodeToQuery::Validator do
       end
     end
 
+    context 'with policy table restrictions' do
+      let(:intent) do
+        { 'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+          '__policy_allowed_tables' => ['users'] }
+      end
+
+      it 'strips caller-supplied policy allowlist metadata before consulting policy' do
+        CodeToQuery.config.policy_adapter = ->(_user, **) { { allowed_tables: ['orders'] } }
+
+        expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted by policy/)
+      end
+
+      it 'treats an explicitly empty policy allowlist as deny all' do
+        CodeToQuery.config.policy_adapter = ->(_user, **) { { allowed_tables: [] } }
+
+        expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted by policy/)
+      end
+
+      it 'leaves tables unrestricted when the policy table allowlist is absent' do
+        CodeToQuery.config.policy_adapter = ->(_user, **) { { allowed_columns: {} } }
+
+        result = validator.validate(intent)
+
+        expect(result[:table]).to eq('users')
+        expect(result).not_to have_key(:__policy_allowed_tables)
+        expect(result).not_to have_key('__policy_allowed_tables')
+      end
+    end
+
     context 'with missing required fields' do
       it 'raises ArgumentError when type is missing' do
         intent = { 'table' => 'users', 'columns' => ['*'] }
@@ -148,6 +177,313 @@ RSpec.describe CodeToQuery::Validator do
 
         result = validator.validate(intent)
         expect(result[:filters].first[:op]).to eq('not_exists')
+      end
+    end
+
+    context 'with policy column restrictions on related subqueries' do
+      before do
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          {
+            allowed_tables: %w[users orders],
+            allowed_columns: {
+              'users' => %w[id email],
+              'orders' => %w[user_id status]
+            }
+          }
+        end
+      end
+
+      def related_subquery_intent(operator, fk_column: 'user_id', base_column: 'id')
+        {
+          'type' => 'select',
+          'table' => 'users',
+          'columns' => ['email'],
+          'filters' => [
+            {
+              'op' => operator,
+              'related_table' => 'orders',
+              'fk_column' => fk_column,
+              'base_column' => base_column,
+              'related_filters' => [
+                { 'column' => 'status', 'op' => '=', 'param' => 'status' }
+              ]
+            }
+          ]
+        }
+      end
+
+      %w[exists not_exists].each do |op|
+        it "allows #{op} when both correlated columns are policy-permitted" do
+          result = validator.validate(related_subquery_intent(op))
+
+          expect(result[:filters].first).to include(fk_column: 'user_id', base_column: 'id')
+        end
+
+        it "rejects #{op} when fk_column is not permitted on the related table" do
+          expect do
+            validator.validate(related_subquery_intent(op, fk_column: 'secret_user_id'))
+          end.to raise_error(ArgumentError, /column 'secret_user_id' not permitted on 'orders'/)
+        end
+
+        it "rejects #{op} when base_column is not permitted on the main table" do
+          expect do
+            validator.validate(related_subquery_intent(op, base_column: 'secret_id'))
+          end.to raise_error(ArgumentError, /column 'secret_id' not permitted on 'users'/)
+        end
+
+        it "uses and checks the default id base_column for #{op} when it is omitted" do
+          subquery_intent = related_subquery_intent(op)
+          subquery_intent['filters'].first.delete('base_column')
+
+          result = validator.validate(subquery_intent)
+
+          expect(result[:filters].first[:base_column]).to eq('id')
+        end
+
+        it "rejects #{op} when the omitted base_column defaults to a disallowed id" do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            {
+              allowed_tables: %w[users orders],
+              allowed_columns: {
+                'users' => ['email'],
+                'orders' => %w[user_id status]
+              }
+            }
+          end
+          subquery_intent = related_subquery_intent(op)
+          subquery_intent['filters'].first.delete('base_column')
+
+          expect do
+            validator.validate(subquery_intent)
+          end.to raise_error(ArgumentError, /column 'id' not permitted on 'users'/)
+        end
+
+        it "does not restrict #{op} correlation columns for nil or empty per-table lists" do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            {
+              allowed_tables: %w[users orders],
+              allowed_columns: { 'users' => nil, 'orders' => [] }
+            }
+          end
+
+          result = validator.validate(
+            related_subquery_intent(op, fk_column: 'legacy_user_key', base_column: 'legacy_id')
+          )
+
+          expect(result[:filters].first).to include(
+            fk_column: 'legacy_user_key', base_column: 'legacy_id'
+          )
+        end
+      end
+    end
+
+    context 'with adapter-specific policy column casing' do
+      let(:column_policy) do
+        {
+          allowed_tables: %w[users orders],
+          allowed_columns: {
+            'users' => %w[id UserCode PublicTotal],
+            'orders' => %w[user_id User_ID status StatusCode]
+          }
+        }
+      end
+      let(:related_intent) do
+        {
+          'type' => 'select', 'table' => 'users', 'columns' => ['UserCode'],
+          'filters' => [{
+            'op' => 'exists', 'related_table' => 'orders',
+            'fk_column' => 'user_id', 'base_column' => 'id',
+            'related_filters' => [{ 'column' => 'StatusCode', 'op' => '=', 'param' => 'status' }]
+          }]
+        }
+      end
+
+      before do
+        config.policy_adapter = ->(_user, **_kwargs) { column_policy }
+      end
+
+      it 'allows distinct exact-case PostgreSQL columns' do
+        expect { validator.validate(related_intent) }.not_to raise_error
+
+        mixed_case_fk = related_intent.dup
+        mixed_case_fk['filters'] = related_intent['filters'].map { |filter| filter.merge('fk_column' => 'User_ID') }
+        expect { validator.validate(mixed_case_fk) }.not_to raise_error
+      end
+
+      {
+        'selected column' => ->(intent) { intent['columns'] = ['usercode'] },
+        'ORDER BY column' => lambda do |intent|
+          intent['order'] = [{ 'column' => 'usercode', 'dir' => 'asc' }]
+        end,
+        'DISTINCT ON column' => ->(intent) { intent['distinct_on'] = ['usercode'] },
+        'GROUP BY column' => ->(intent) { intent['group_by'] = ['usercode'] },
+        'aggregation column' => lambda do |intent|
+          intent['aggregations'] = [{ 'type' => 'sum', 'column' => 'publictotal' }]
+        end,
+        'main-table filter column' => lambda do |intent|
+          intent['filters'] = [{ 'column' => 'usercode', 'op' => '=', 'param' => 'code' }]
+        end,
+        'related fk_column' => ->(intent) { intent['filters'].first['fk_column'] = 'USER_ID' },
+        'main-table base_column' => ->(intent) { intent['filters'].first['base_column'] = 'ID' },
+        'related filter column' => ->(intent) { intent['filters'].first['related_filters'].first['column'] = 'statuscode' }
+      }.each do |path, change_case|
+        it "rejects a case-only PostgreSQL mismatch in the #{path}" do
+          intent = Marshal.load(Marshal.dump(related_intent))
+          change_case.call(intent)
+
+          expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted/)
+        end
+      end
+
+      %i[mysql sqlite].each do |adapter|
+        it "retains #{adapter} case-insensitive column semantics" do
+          config.adapter = adapter
+          intent = Marshal.load(Marshal.dump(related_intent))
+          intent['columns'] = ['usercode']
+          intent['filters'].first['fk_column'] = 'USER_ID'
+          intent['filters'].first['base_column'] = 'ID'
+          intent['filters'].first['related_filters'].first['column'] = 'statuscode'
+
+          expect { validator.validate(intent) }.not_to raise_error
+        end
+
+        it "does not Unicode-case-fold #{adapter} policy identifiers" do
+          config.adapter = adapter
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_tables: ['kids'], allowed_columns: { 'kids' => ['kind'] } }
+          end
+
+          expect do
+            validator.validate({ 'type' => 'select', 'table' => 'Kids', 'columns' => ['kind'] })
+          end.to raise_error(ArgumentError, /not permitted by policy/)
+          expect do
+            validator.validate({ 'type' => 'select', 'table' => 'kids', 'columns' => ['Kind'] })
+          end.to raise_error(ArgumentError, /not permitted/)
+        end
+      end
+
+      it 'uses case-insensitive MySQL policy table keys when enforcing columns' do
+        config.adapter = :mysql
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          { allowed_columns: { 'Users' => ['id'] } }
+        end
+        intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['secret'] }
+
+        expect { validator.validate(intent) }
+          .to raise_error(ArgumentError, /selecting column 'secret' not permitted on 'users'/)
+      end
+
+      context 'with a case-only PostgreSQL policy table-key mismatch' do
+        before do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'Users' => ['id'] } }
+          end
+        end
+
+        [
+          ['a wildcard SELECT', { 'columns' => ['*'] }],
+          ['an empty SELECT column list', { 'columns' => [] }],
+          [
+            'a columnless count aggregation',
+            { 'columns' => [], 'aggregations' => [{ 'type' => 'count' }] }
+          ]
+        ].each do |description, attributes|
+          it "fails closed for #{description} without relying on a column reference" do
+            intent = { 'type' => 'select', 'table' => 'users' }.merge(attributes)
+
+            expect { validator.validate(intent) }
+              .to raise_error(ArgumentError, /policy table key not permitted on 'users'/)
+          end
+        end
+
+        {
+          'selected column' => ->(intent) { intent['columns'] = ['id'] },
+          'filter column' => lambda do |intent|
+            intent['filters'] = [{ 'column' => 'id', 'op' => '=', 'param' => 'id' }]
+          end,
+          'ORDER BY column' => lambda do |intent|
+            intent['order'] = [{ 'column' => 'id', 'dir' => 'asc' }]
+          end,
+          'DISTINCT ON column' => ->(intent) { intent['distinct_on'] = ['id'] },
+          'GROUP BY column' => ->(intent) { intent['group_by'] = ['id'] },
+          'aggregation column' => lambda do |intent|
+            intent['aggregations'] = [{ 'type' => 'sum', 'column' => 'id' }]
+          end
+        }.each do |path, add_column_reference|
+          it "fails closed for the main-table #{path}" do
+            intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['*'] }
+            add_column_reference.call(intent)
+
+            expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'users'/)
+          end
+        end
+
+        %w[fk_column related_filters].each do |path|
+          it "fails closed for a related-table #{path} path" do
+            config.policy_adapter = lambda do |_user, **_kwargs|
+              { allowed_columns: { 'users' => ['id'], 'Orders' => %w[user_id status] } }
+            end
+            intent = {
+              'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+              'filters' => [{
+                'op' => 'exists', 'related_table' => 'orders',
+                'fk_column' => 'user_id', 'base_column' => 'id',
+                'related_filters' => [{ 'column' => 'status', 'op' => '=', 'param' => 'status' }]
+              }]
+            }
+
+            expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'orders'/)
+          end
+        end
+
+        it 'rejects a related-table key mismatch before checking its columns' do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'users' => ['id'], 'Orders' => [] } }
+          end
+          intent = {
+            'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+            'filters' => [{
+              'op' => 'exists', 'related_table' => 'orders',
+              'fk_column' => 'legacy_user_id', 'base_column' => 'id'
+            }]
+          }
+
+          expect { validator.validate(intent) }
+            .to raise_error(ArgumentError, /policy table key not permitted on 'orders'/)
+        end
+
+        it 'fails closed for a main-table base_column path' do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'Users' => ['id'], 'orders' => ['user_id'] } }
+          end
+          intent = {
+            'type' => 'select', 'table' => 'users', 'columns' => ['*'],
+            'filters' => [{
+              'op' => 'exists', 'related_table' => 'orders',
+              'fk_column' => 'user_id', 'base_column' => 'id'
+            }]
+          }
+
+          expect { validator.validate(intent) }.to raise_error(ArgumentError, /not permitted on 'users'/)
+        end
+
+        it 'preserves partial policies for truly unrelated absent PostgreSQL table keys' do
+          config.policy_adapter = lambda do |_user, **_kwargs|
+            { allowed_columns: { 'accounts' => ['id'] } }
+          end
+          intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['secret'] }
+
+          expect { validator.validate(intent) }.not_to raise_error
+        end
+
+        %i[mysql sqlite].each do |adapter|
+          it "retains #{adapter} case-insensitive table-key behavior" do
+            config.adapter = adapter
+            intent = { 'type' => 'select', 'table' => 'users', 'columns' => ['id'] }
+
+            expect { validator.validate(intent) }.not_to raise_error
+          end
+        end
       end
     end
 
@@ -330,6 +666,17 @@ RSpec.describe CodeToQuery::Validator do
         result = validator.validate(intent)
         expect(result[:columns]).to eq(['*'])
       end
+
+      it 'records policy-allowed tables for downstream SQL linting' do
+        intent = {
+          'type' => 'select',
+          'table' => 'users',
+          'columns' => ['*']
+        }
+
+        result = validator.validate(intent)
+        expect(result[:__policy_allowed_tables]).to eq(%w[users orders])
+      end
     end
   end
 
@@ -382,8 +729,11 @@ RSpec.describe CodeToQuery::Validator do
       end
 
       it 'falls back to simpler call signature' do
+        allow(adapter).to receive(:call).and_call_original
+
         result = validator.send(:safe_call_policy_adapter, adapter, nil, table: 'orders', intent: {})
         expect(result[:allowed_tables]).to eq(['orders'])
+        expect(adapter).to have_received(:call).once
       end
     end
 
@@ -394,6 +744,7 @@ RSpec.describe CodeToQuery::Validator do
 
       it 'falls back to current-user-only call signature under fail-closed default' do
         CodeToQuery.config.policy_adapter_fail_open = false
+        allow(adapter).to receive(:call).and_call_original
 
         result = validator.send(
           :safe_call_policy_adapter,
@@ -404,6 +755,7 @@ RSpec.describe CodeToQuery::Validator do
         )
 
         expect(result[:allowed_tables]).to eq(['accounts'])
+        expect(adapter).to have_received(:call).once
       end
     end
 
@@ -428,6 +780,23 @@ RSpec.describe CodeToQuery::Validator do
         result = validator.send(:safe_call_policy_adapter, adapter, nil, table: 'users', intent: {})
 
         expect(result).to eq({})
+      end
+    end
+
+    context 'when a compatible adapter raises a signature-like ArgumentError internally' do
+      ['wrong number of arguments', 'unknown keyword: :intent'].each do |message|
+        it "invokes the adapter once and fails closed for #{message.inspect}" do
+          calls = 0
+          adapter = lambda do |_user, table:, intent:|
+            calls += 1
+            raise ArgumentError, message if table == 'users' && intent
+          end
+
+          expect do
+            validator.send(:safe_call_policy_adapter, adapter, nil, table: 'users', intent: {})
+          end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy adapter failed: #{Regexp.escape(message)}/)
+          expect(calls).to eq(1)
+        end
       end
     end
   end

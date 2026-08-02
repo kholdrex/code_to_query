@@ -43,6 +43,10 @@ module CodeToQuery
 
     def validate(intent_hash, current_user: nil, allow_tables: nil)
       preprocessed = preprocess_exists_filters(intent_hash)
+      # Policy metadata is an internal, trusted channel. Never permit an
+      # intent supplied by a caller/provider to influence it.
+      preprocessed.delete('__policy_allowed_tables')
+      preprocessed.delete(:__policy_allowed_tables)
 
       if fetch_value(preprocessed, :limit).nil? && CodeToQuery.config.default_limit
         preprocessed = preprocessed.merge('limit' => CodeToQuery.config.default_limit)
@@ -123,7 +127,8 @@ module CodeToQuery
       # Enforce table allowlist if provided (from user input)
       if Array(allow_tables).any?
         table = fetch_value(intent, :table)
-        if (table.to_s.strip != '') && !Array(allow_tables).map { |t| t.to_s.downcase }.include?(table.to_s.downcase)
+        if (table.to_s.strip != '') &&
+           Array(allow_tables).none? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, table) }
           raise ArgumentError, "Invalid intent: table '#{table}' not allowed"
         end
       end
@@ -145,10 +150,14 @@ module CodeToQuery
         raise CodeToQuery::PolicyAdapterError, message
       end
 
-      allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map { |t| t.to_s.downcase }
-      if allowed_tables.any?
+      policy_has_allowed_tables = policy_info.key?(:allowed_tables) || policy_info.key?('allowed_tables')
+      if policy_has_allowed_tables
+        allowed_tables = Array(fetch_value(policy_info, :allowed_tables)).map(&:to_s)
+        intent[:__policy_allowed_tables] = allowed_tables
+        intent['__policy_allowed_tables'] = allowed_tables
+
         table = fetch_value(intent, :table)
-        if (table.to_s.strip != '') && !allowed_tables.include?(table.to_s.downcase)
+        if (table.to_s.strip != '') && allowed_tables.none? { |allowed| policy_table_allowed?(table, allowed) }
           raise ArgumentError, "Invalid intent: table '#{table}' not permitted by policy"
         end
       end
@@ -156,19 +165,22 @@ module CodeToQuery
       allowed_columns = fetch_value(policy_info, :allowed_columns) || {}
       return if allowed_columns.nil? || allowed_columns.empty?
 
-      # Normalize map keys to strings with lowercase table and column names
+      # Preserve identifier case because PostgreSQL quotes every identifier.
+      # Quoted PostgreSQL columns are distinct by case, while MySQL and SQLite
+      # column identifiers remain case-insensitive.
       normalized = {}
       allowed_columns.each do |tbl, cols|
-        normalized[tbl.to_s.downcase] = Array(cols).map { |c| c.to_s.downcase }
+        normalized[tbl.to_s] = Array(cols).map(&:to_s)
       end
 
-      main_table = fetch_value(intent, :table).to_s.downcase
+      main_table = fetch_value(intent, :table).to_s
+      main_columns = policy_columns_for_table(normalized, main_table)
 
       # Columns in SELECT
       Array(fetch_value(intent, :columns)).each do |col|
         next if col == '*'
-        next unless normalized[main_table]&.any?
-        unless normalized[main_table].include?(col.to_s.downcase)
+        next unless main_columns&.any?
+        unless policy_column_allowed?(col, main_columns)
           raise ArgumentError, "Invalid intent: selecting column '#{col}' not permitted on '#{main_table}'"
         end
       end
@@ -177,25 +189,35 @@ module CodeToQuery
       Array(fetch_value(intent, :order)).each do |o|
         col = fetch_value(o, :column)
         next if col.nil?
-        next unless normalized[main_table]&.any?
-        unless normalized[main_table].include?(col.to_s.downcase)
+        next unless main_columns&.any?
+        unless policy_column_allowed?(col, main_columns)
           raise ArgumentError, "Invalid intent: ordering by column '#{col}' not permitted on '#{main_table}'"
         end
       end
 
       # DISTINCT ON columns
       Array(fetch_value(intent, :distinct_on)).each do |col|
-        next unless normalized[main_table]&.any?
-        unless normalized[main_table].include?(col.to_s.downcase)
+        next unless main_columns&.any?
+        unless policy_column_allowed?(col, main_columns)
           raise ArgumentError, "Invalid intent: distinct_on column '#{col}' not permitted on '#{main_table}'"
         end
       end
 
       # GROUP BY
       Array(fetch_value(intent, :group_by)).each do |col|
-        next unless normalized[main_table]&.any?
-        unless normalized[main_table].include?(col.to_s.downcase)
+        next unless main_columns&.any?
+        unless policy_column_allowed?(col, main_columns)
           raise ArgumentError, "Invalid intent: group_by column '#{col}' not permitted on '#{main_table}'"
+        end
+      end
+
+      # Aggregation columns
+      Array(fetch_value(intent, :aggregations)).each do |aggregation|
+        col = fetch_value(aggregation, :column)
+        next if col.nil?
+        next unless main_columns&.any?
+        unless policy_column_allowed?(col, main_columns)
+          raise ArgumentError, "Invalid intent: aggregation column '#{col}' not permitted on '#{main_table}'"
         end
       end
 
@@ -204,13 +226,17 @@ module CodeToQuery
         op = fetch_value(f, :op).to_s
         if %w[exists not_exists].include?(op)
           related_table = fetch_value(f, :related_table)
-          rel_cols = normalized[related_table.to_s.downcase]
+          rel_cols = policy_columns_for_table(normalized, related_table)
+
+          ensure_policy_column_allowed!(fetch_value(f, :fk_column), related_table, rel_cols)
+          ensure_policy_column_allowed!(fetch_value(f, :base_column), main_table, main_columns)
+
           next if rel_cols.nil? || rel_cols.empty?
 
           Array(fetch_value(f, :related_filters)).each do |rf|
             col = fetch_value(rf, :column)
             next if col.nil?
-            unless rel_cols.include?(col.to_s.downcase)
+            unless policy_column_allowed?(col, rel_cols)
               raise ArgumentError, "Invalid intent: filter column '#{col}' not permitted on '#{related_table}'"
             end
           end
@@ -218,9 +244,9 @@ module CodeToQuery
           col = fetch_value(f, :column)
           next if col.nil?
 
-          cols = normalized[main_table]
+          cols = main_columns
           next if cols.nil? || cols.empty?
-          unless cols.include?(col.to_s.downcase)
+          unless policy_column_allowed?(col, cols)
             raise ArgumentError, "Invalid intent: filter column '#{col}' not permitted on '#{main_table}'"
           end
         end
@@ -232,24 +258,38 @@ module CodeToQuery
       raise ArgumentError, e.message
     end
 
-    def safe_call_policy_adapter(adapter, current_user, table:, intent:)
-      adapter.call(current_user, table: table, intent: intent)
-    rescue ArgumentError
-      begin
-        adapter.call(current_user, table: table)
-      rescue ArgumentError
-        begin
-          adapter.call(current_user)
-        rescue StandardError => e
-          return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+    def ensure_policy_column_allowed!(column, table, allowed_columns)
+      return if allowed_columns.nil? || allowed_columns.empty?
+      return if policy_column_allowed?(column, allowed_columns)
 
-          raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
-        end
-      rescue StandardError => e
-        return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
+      raise ArgumentError, "Invalid intent: column '#{column}' not permitted on '#{table}'"
+    end
 
-        raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
+    def policy_columns_for_table(allowed_columns, table)
+      entry = allowed_columns.find { |allowed_table, _columns| policy_table_allowed?(table, allowed_table) }
+      return entry.last if entry
+
+      return unless %i[postgres postgresql].include?(CodeToQuery.config.adapter.to_sym)
+      return unless allowed_columns.any? do |allowed_table, _columns|
+        IdentifierSemantics.ascii_case_insensitive?(table, allowed_table)
       end
+
+      # PostgreSQL quotes identifiers, so a case-only policy key names a
+      # different table. Reject the near-match here rather than waiting for a
+      # column reference, since wildcard and columnless queries have none.
+      raise ArgumentError, "Invalid intent: policy table key not permitted on '#{table}' due to identifier casing"
+    end
+
+    def policy_column_allowed?(column, allowed_columns)
+      if %i[postgres postgresql].include?(CodeToQuery.config.adapter.to_sym)
+        return allowed_columns.include?(column.to_s)
+      end
+
+      allowed_columns.any? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, column) }
+    end
+
+    def safe_call_policy_adapter(adapter, current_user, table:, intent:)
+      PolicyAdapterInvoker.call(adapter, current_user, table: table, intent: intent)
     rescue StandardError => e
       if policy_adapter_fail_open?
         CodeToQuery.config.logger.warn("[code_to_query] Policy adapter failed: #{e.message}")
@@ -257,6 +297,14 @@ module CodeToQuery
       end
 
       raise CodeToQuery::PolicyAdapterError, "Policy adapter failed: #{e.message}"
+    end
+
+    def policy_table_allowed?(table, allowed)
+      if %i[mysql sqlite].include?(CodeToQuery.config.adapter.to_sym)
+        return IdentifierSemantics.ascii_case_insensitive?(table, allowed)
+      end
+
+      table.to_s == allowed.to_s
     end
 
     def handle_policy_failure(message)

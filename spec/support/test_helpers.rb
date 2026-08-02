@@ -56,4 +56,23 @@ end
 
 RSpec.configure do |config|
   config.include TestHelpers
+
+  # Specs share the production singleton, so restore every setting after each example.
+  config.around do |example|
+    singleton_config = CodeToQuery::Configuration.instance
+    original_state = singleton_config.instance_variables.to_h do |variable|
+      [variable, singleton_config.instance_variable_get(variable)]
+    end
+
+    example.run
+  ensure
+    if singleton_config && original_state
+      (singleton_config.instance_variables - original_state.keys).each do |variable|
+        singleton_config.remove_instance_variable(variable)
+      end
+      original_state.each do |variable, value|
+        singleton_config.instance_variable_set(variable, value)
+      end
+    end
+  end
 end

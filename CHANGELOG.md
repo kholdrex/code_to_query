@@ -13,6 +13,10 @@ This file tracks the major changes in each release.
 - Added a security policy and threat model covering safe deployment defaults, cross-tenant data exposure, schema-context filtering, observability data exposure, and vulnerability reporting.
 
 ### Changed
+- Security compatibility: when a `policy_adapter` is configured, executable `Query` objects must come from `CodeToQuery.ask` (or the compiler path) with the compiler's opaque policy contract. Directly constructed queries have no valid contract and now fail closed.
+- `Query#sql`, `#params`, `#intent`, and `#metrics` now return detached deep copies. Mutating a returned value no longer changes query state; repeated reads may allocate new objects.
+- Compiled policy queries are bound to the exact policy adapter and configuration identity used at compilation. Replacing the adapter or relevant configuration invalidates existing queries; compile them again before execution.
+- Compatibility note: policy adapters that explicitly return `allowed_tables: []` deny access to all tables, as intended; omit `allowed_tables` only when no policy table allowlist is being supplied.
 - Added explicit explain-gate profiles and deployment tradeoff guidance for `explain_fail_open` in the README, including strict, availability-first, and local/test configuration patterns.
 - Breaking default change: EXPLAIN gate errors now fail closed by default; set `explain_fail_open = true` only for availability-first readonly deployments that can tolerate skipped EXPLAIN checks.
 - Context pack generation now omits sensitive schema metadata by default for password, secret, token, credential, digest, salt, OTP, and API key style columns; customize `sensitive_column_patterns` when applications use additional naming conventions.

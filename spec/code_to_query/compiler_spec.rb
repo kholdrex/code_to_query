@@ -172,6 +172,50 @@ RSpec.describe CodeToQuery::Compiler do
       end
     end
 
+    context 'with related subquery BETWEEN filter' do
+      let(:intent) do
+        {
+          'type' => 'select',
+          'table' => 'questions',
+          'columns' => ['*'],
+          'filters' => [
+            { 'column' => 'archived', 'op' => '=', 'param' => 'archived' },
+            {
+              'column' => 'id',
+              'op' => 'exists',
+              'related_table' => 'answers',
+              'fk_column' => 'question_id',
+              'base_column' => 'id',
+              'related_filters' => [
+                { 'column' => 'created_at', 'op' => 'between' }
+              ]
+            }
+          ],
+          'limit' => 100,
+          'params' => {
+            'archived' => false,
+            'created_at_start' => '2023-01-01',
+            'created_at_end' => '2023-12-31'
+          }
+        }
+      end
+
+      it 'preserves subquery BETWEEN placeholders and bind order' do
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq(
+          'SELECT * FROM "questions" WHERE "archived" = $1 AND ' \
+          'EXISTS (SELECT 1 FROM "answers" WHERE "answers"."question_id" = "questions"."id" ' \
+          'AND "answers"."created_at" BETWEEN $2 AND $3) LIMIT 100'
+        )
+        expect(result[:bind_spec]).to eq([
+                                           { key: 'archived', column: 'archived', cast: nil },
+                                           { key: 'created_at_start', column: 'created_at', cast: nil },
+                                           { key: 'created_at_end', column: 'created_at', cast: nil }
+                                         ])
+      end
+    end
+
     context 'with WHERE filters' do
       let(:intent) do
         {
@@ -294,6 +338,74 @@ RSpec.describe CodeToQuery::Compiler do
           hash_including(key: 'created_at_start', column: 'created_at'),
           hash_including(key: 'created_at_end', column: 'created_at')
         )
+      end
+
+      it 'aliases legacy symbol keys to derived bind keys for SQL compilation' do
+        intent['params'] = { start: '2023-01-01', end: '2023-12-31' }
+
+        result = compiler.compile(intent)
+
+        expect(result[:params]['created_at_start']).to eq('2023-01-01')
+        expect(result[:params]['created_at_end']).to eq('2023-12-31')
+      end
+
+      it 'preserves falsey legacy symbol values when aliasing derived bind keys' do
+        intent['params'] = { start: false, end: true }
+
+        result = compiler.compile(intent)
+
+        expect(result[:params]['created_at_start']).to be(false)
+        expect(result[:params]['created_at_end']).to be(true)
+      end
+    end
+
+    context 'with Arel BETWEEN filters lacking explicit param names' do
+      let(:arel_table) { Arel::Table.new(:orders) }
+      let(:filter) do
+        {
+          'column' => 'created_at',
+          'op' => 'between'
+        }
+      end
+
+      it 'reuses derived bind keys and aliases legacy params for Arel compilation' do
+        bind_spec = []
+        params_hash = { 'start' => '2023-01-01', 'end' => '2023-12-31' }
+
+        condition = compiler.__send__(:build_arel_condition, arel_table, filter, bind_spec, params_hash)
+
+        expect(condition).to be_a(Arel::Nodes::Between)
+        expect(params_hash['created_at_start']).to eq('2023-01-01')
+        expect(params_hash['created_at_end']).to eq('2023-12-31')
+        expect(bind_spec).to eq([
+                                  { key: 'created_at_start', column: 'created_at', cast: nil },
+                                  { key: 'created_at_end', column: 'created_at', cast: nil }
+                                ])
+      end
+
+      it 'aliases legacy symbol keys for Arel compilation' do
+        bind_spec = []
+        params_hash = { start: '2023-01-01', end: '2023-12-31' }
+
+        compiler.__send__(:build_arel_condition, arel_table, filter, bind_spec, params_hash)
+
+        expect(params_hash['created_at_start']).to eq('2023-01-01')
+        expect(params_hash['created_at_end']).to eq('2023-12-31')
+      end
+
+      it 'aliases only the implicit side when one bound keeps an explicit param name' do
+        bind_spec = []
+        params_hash = { 'end' => '2023-12-31' }
+        mixed_filter = filter.merge('param_start' => 'from_date')
+
+        compiler.__send__(:build_arel_condition, arel_table, mixed_filter, bind_spec, params_hash)
+
+        expect(params_hash).not_to have_key('created_at_start')
+        expect(params_hash['created_at_end']).to eq('2023-12-31')
+        expect(bind_spec).to eq([
+                                  { key: 'from_date', column: 'created_at', cast: nil },
+                                  { key: 'created_at_end', column: 'created_at', cast: nil }
+                                ])
       end
     end
 
@@ -691,6 +803,16 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:bind_spec]).to include(hash_including(key: 'policy_tenant_id', column: 'tenant_id'))
       end
 
+      it 'supports legacy policy adapters that accept only current user' do
+        config.policy_adapter = ->(user) { { enforced_predicates: { tenant_id: user.fetch(:tenant_id) } } }
+        allow(config.policy_adapter).to receive(:call).and_call_original
+
+        result = compiler.compile(intent, current_user: { tenant_id: 42 })
+
+        expect(result[:params]).to include('policy_tenant_id' => 42)
+        expect(config.policy_adapter).to have_received(:call).once
+      end
+
       it 'fails closed when the adapter raises' do
         config.policy_adapter = ->(_user, **) { raise 'policy service unavailable' }
 
@@ -727,6 +849,49 @@ RSpec.describe CodeToQuery::Compiler do
         )
       end
 
+      it 'accepts an empty enforced_predicates contract' do
+        config.policy_adapter = ->(_user, **) { { enforced_predicates: {} } }
+
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq('SELECT * FROM "orders" LIMIT 100')
+        expect(result[:bind_spec]).to eq([])
+      end
+
+      it 'accepts an empty predicates contract' do
+        config.policy_adapter = ->(_user, **) { { predicates: {} } }
+
+        result = compiler.compile(intent)
+
+        expect(result[:sql]).to eq('SELECT * FROM "orders" LIMIT 100')
+        expect(result[:bind_spec]).to eq([])
+      end
+
+      it 'does not swallow errors raised inside an intent-aware strict keyword adapter' do
+        config.policy_adapter = lambda do |_user, table:, intent:|
+          raise ArgumentError, "policy rejected #{table}" if intent
+        end
+
+        expect { compiler.compile(intent) }.to raise_error(
+          CodeToQuery::PolicyAdapterError, /policy rejected orders/
+        )
+      end
+
+      ['wrong number of arguments', 'unknown keyword: :intent'].each do |message|
+        it "invokes an intent-aware adapter once and fails closed when it internally raises #{message.inspect}" do
+          calls = 0
+          config.policy_adapter = lambda do |_user, table:, intent:|
+            calls += 1
+            raise ArgumentError, message if table == 'orders' && intent
+          end
+
+          expect { compiler.compile(intent) }.to raise_error(
+            CodeToQuery::PolicyAdapterError, /Policy adapter failed: #{Regexp.escape(message)}/
+          )
+          expect(calls).to eq(1)
+        end
+      end
+
       it 'documents explicit availability mode by allowing fail open only when configured' do
         config.policy_adapter_fail_open = true
         config.policy_adapter = ->(_user, **) { raise 'policy service unavailable' }
@@ -760,10 +925,31 @@ RSpec.describe CodeToQuery::Compiler do
 
         result = compiler.compile(intent)
 
-        expect(result[:sql]).to include('WHERE "status" = $1 AND "tenant_id" = $2')
+        expect(result[:sql]).to include('WHERE "status" = $1 AND "orders"."tenant_id" = $2')
         expect(result[:params]).to include('status' => 'paid', 'policy_tenant_id' => 42)
         expect(result[:bind_spec]).to include(hash_including(key: 'status', column: 'status'))
         expect(result[:bind_spec]).to include(hash_including(key: 'policy_tenant_id', column: 'tenant_id'))
+      end
+
+      it 'produces a safe query with adapter-quoted policy identifiers when string building is forced' do
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          { allowed_tables: ['AuditEvents'], enforced_predicates: { 'TenantID' => 42 } }
+        end
+        allow(compiler).to receive(:use_arel?).and_return(false)
+        intent = {
+          'type' => 'select', 'table' => 'AuditEvents', 'columns' => ['*'],
+          'filters' => [], 'limit' => 100, 'params' => {}
+        }
+
+        result = compiler.compile(intent)
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: nil, config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(result[:sql]).to include('"AuditEvents"."TenantID" = $1')
+        expect(query.safe?).to be true
       end
 
       it 'does not let prompt-sourced filters override tenant predicates' do
@@ -778,7 +964,7 @@ RSpec.describe CodeToQuery::Compiler do
 
         result = compiler.compile(intent)
 
-        expect(result[:sql]).to include('"tenant_id" != $1 AND "tenant_id" = $2')
+        expect(result[:sql]).to include('"tenant_id" != $1 AND "orders"."tenant_id" = $2')
         expect(result[:params]).to include('attacker_tenant_id' => 42, 'policy_tenant_id' => 42)
       end
     end
@@ -832,6 +1018,210 @@ RSpec.describe CodeToQuery::Compiler do
         expect(result[:params]['policy_tenant_id']).to eq(666)
         expect(result[:params][subquery_key]).to eq(42)
         expect(result[:bind_spec]).to include(hash_including(key: subquery_key, column: :tenant_id))
+        expect(result[:intent]['__policy_expected_keys']).to include(subquery_key)
+      end
+
+      it 'enforces related-table policy when Arel compilation is selected' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          kwargs[:table] == 'answers' ? { enforced_predicates: { tenant_id: 42 } } : {}
+        end
+        allow(compiler).to receive(:use_arel?).and_return(true)
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+
+        expect(result[:sql]).to include('EXISTS', '"answers"."tenant_id" = $1')
+        expect(result[:params]).to include('policy_subquery_1_answers_tenant_id' => 42)
+        expect(result[:bind_spec]).to include(hash_including(key: 'policy_subquery_1_answers_tenant_id'))
+      end
+
+      it 'discards caller-supplied policy expectation metadata' do
+        config.policy_adapter = ->(_user, **) { {} }
+        untrusted_intent = {
+          'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
+          '__policy_expected_keys' => ['policy_attacker'],
+          '__policy_allowed_tables' => ['attacker_secrets'],
+          '__policy_related_tables' => ['attacker_secrets']
+        }
+
+        result = compiler.compile(untrusted_intent)
+
+        expect(result[:intent]).not_to have_key('__policy_expected_keys')
+        expect(result[:intent]).not_to have_key('__policy_allowed_tables')
+        expect(result[:intent]).not_to have_key('__policy_related_tables')
+      end
+
+      it 'replaces caller-supplied allowlist metadata with the enforced policy allowlist' do
+        config.policy_adapter = lambda do |_user, **_kwargs|
+          { allowed_tables: ['questions'], enforced_predicates: { tenant_id: 42 } }
+        end
+        untrusted_intent = {
+          'table' => 'questions', 'columns' => ['*'], 'filters' => [], 'params' => {},
+          '__policy_allowed_tables' => ['attacker']
+        }
+
+        result = compiler.compile(untrusted_intent)
+
+        expect(result[:intent]['__policy_allowed_tables']).to eq(['questions'])
+      end
+
+      it 'rejects an explicitly empty related policy allowlist' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          kwargs[:table] == 'questions' ? { allowed_tables: ['questions'] } : { allowed_tables: [] }
+        end
+
+        expect do
+          compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy does not allow related table: answers/)
+      end
+
+      it 'rejects a related table omitted by its own policy response despite the outer allowlist' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          if kwargs[:table] == 'questions'
+            { allowed_tables: %w[questions answers] }
+          else
+            { allowed_tables: ['questions'] }
+          end
+        end
+
+        expect do
+          compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        end.to raise_error(CodeToQuery::PolicyAdapterError, /Policy does not allow related table: answers/)
+      end
+
+      it 'does not widen top-level authorization with related-table policy metadata' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          case kwargs[:table]
+          when 'questions'
+            { allowed_tables: ['questions'] }
+          when 'answers'
+            {
+              allowed_tables: %w[answers users],
+              enforced_predicates: { tenant_id: 42 }
+            }
+          else
+            {}
+          end
+        end
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        query_options = {
+          params: result[:params], bind_spec: result[:bind_spec], intent: result[:intent],
+          allow_tables: nil, config: config, policy_contract: result[:policy_contract]
+        }
+        correlated_query = CodeToQuery::Query.new(sql: result[:sql], **query_options)
+        widened_query = CodeToQuery::Query.new(
+          sql: result[:sql].sub('FROM "questions"', 'FROM "questions" JOIN "users" ON TRUE'),
+          **query_options
+        )
+
+        expect(result[:intent]['__policy_allowed_tables']).to eq(['questions'])
+        expect(result[:intent]['__policy_related_tables']).to eq(['answers'])
+        expect(correlated_query.safe?).to be true
+        expect(widened_query.safe?).to be false
+      end
+
+      it 'does not widen an explicit caller allowlist with an authorized related table' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          if kwargs[:table] == 'questions'
+            { allowed_tables: %w[questions answers] }
+          else
+            { allowed_tables: ['answers'], enforced_predicates: { tenant_id: 42 } }
+          end
+        end
+
+        result = compiler.compile(
+          {
+            'table' => 'questions', 'columns' => ['*'],
+            'filters' => [related_filter('answers')], 'limit' => 100, 'params' => {}
+          },
+          allow_tables: ['questions']
+        )
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: ['questions'], config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(query.safe?).to be false
+      end
+
+      # rubocop:disable RSpec/ExampleLength
+      it 'keeps policy bind ownership distinct for colliding quoted table names' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          case kwargs[:table]
+          when 'a-b'
+            { allowed_tables: ['a-b'], enforced_predicates: { tenant_id: 7 } }
+          when 'a_b'
+            { allowed_tables: ['a_b'], enforced_predicates: { tenant_id: 9 } }
+          else
+            { allowed_tables: %w[questions a-b a_b] }
+          end
+        end
+
+        result = compiler.compile(
+          {
+            'table' => 'questions', 'columns' => ['*'],
+            'filters' => [
+              related_filter('a-b'),
+              related_filter('a_b', operation: 'not_exists')
+            ],
+            'limit' => 100, 'params' => {}
+          },
+          allow_tables: %w[questions a-b a_b]
+        )
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: %w[questions a-b a_b], config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(result[:sql]).to include('FROM "a-b"', 'FROM "a_b"')
+        expect(result[:params]).to include(
+          'policy_subquery_1_a_b_tenant_id' => 7,
+          'policy_subquery_2_a_b_tenant_id' => 9
+        )
+        expect(query.safe?).to be true
+      end
+      # rubocop:enable RSpec/ExampleLength
+
+      it 'preserves an unrestricted base policy when authorizing a related table' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          if kwargs[:table] == 'answers'
+            { allowed_tables: %w[answers users], enforced_predicates: { tenant_id: 42 } }
+          else
+            {}
+          end
+        end
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: nil, config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(result[:intent]).not_to have_key('__policy_allowed_tables')
+        expect(result[:intent]['__policy_related_tables']).to eq(['answers'])
+        expect(query.safe?).to be true
+      end
+
+      it 'does not mutate the caller intent while recording subquery policy expectations' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          kwargs[:table] == 'answers' ? { enforced_predicates: { tenant_id: 42 } } : {}
+        end
+
+        original_intent = {
+          'table' => 'questions',
+          'columns' => ['*'],
+          'filters' => [related_filter('answers')],
+          'limit' => 100,
+          'params' => {}
+        }
+
+        compiler.compile(original_intent)
+
+        expect(original_intent).not_to have_key('__policy_expected_keys')
+        expect(original_intent['filters'].first).not_to have_key('__policy_expected_keys')
       end
 
       it 'keeps main-table and related-table policy binds distinct for the same column name' do
@@ -850,11 +1240,36 @@ RSpec.describe CodeToQuery::Compiler do
         subquery_key = 'policy_subquery_1_answers_tenant_id'
 
         expect(result[:sql]).to include('"answers"."tenant_id" = $1')
-        expect(result[:sql]).to include('"tenant_id" = $2')
+        expect(result[:sql]).to include('"questions"."tenant_id" = $2')
         expect(result[:params]['policy_tenant_id']).to eq(42)
         expect(result[:params][subquery_key]).to eq(7)
         expect(result[:bind_spec]).to include(hash_including(key: subquery_key, column: :tenant_id))
         expect(result[:bind_spec]).to include(hash_including(key: 'policy_tenant_id', column: 'tenant_id'))
+      end
+
+      it 'produces a safe EXISTS query with qualified base and related policy predicates' do
+        config.policy_adapter = lambda do |_user, **kwargs|
+          case kwargs[:table]
+          when 'questions'
+            { allowed_tables: %w[questions answers], enforced_predicates: { tenant_id: 42 } }
+          when 'answers'
+            { allowed_tables: ['answers'], enforced_predicates: { tenant_id: 7 } }
+          else
+            {}
+          end
+        end
+        allow(compiler).to receive(:use_arel?).and_return(true)
+
+        result = compile_with_related_filters(table: 'questions', filters: [related_filter('answers')])
+        query = CodeToQuery::Query.new(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: nil, config: config,
+          policy_contract: result[:policy_contract]
+        )
+
+        expect(result[:sql]).to include('"answers"."tenant_id" = $1')
+        expect(result[:sql]).to include('"questions"."tenant_id" = $2')
+        expect(query.safe?).to be true
       end
 
       it 'uses separate bind keys for multiple related-table policies on the same column name' do
@@ -904,6 +1319,24 @@ RSpec.describe CodeToQuery::Compiler do
 
         expect(result[:sql]).to include('"line_items"."account_id" = $1')
         expect(result[:params][subquery_key]).to eq(7)
+      end
+
+      it 'passes the parent intent when applying subquery policies' do
+        observed_intents = []
+        config.policy_adapter = lambda do |_user, **kwargs|
+          observed_intents << kwargs[:intent] if kwargs[:table] == 'line_items'
+
+          kwargs[:table] == 'line_items' ? { enforced_predicates: { account_id: 7 } } : {}
+        end
+
+        result = compile_with_related_filters(
+          table: 'orders',
+          filters: [related_filter('line_items', fk_column: 'order_id')],
+          current_user: { account_id: 7 }
+        )
+
+        expect(observed_intents).to contain_exactly(include('table' => 'orders', 'filters' => [include('related_table' => 'line_items')]))
+        expect(result[:params]['policy_subquery_1_line_items_account_id']).to eq(7)
       end
     end
   end

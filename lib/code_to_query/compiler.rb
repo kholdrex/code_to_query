@@ -11,16 +11,94 @@ end
 module CodeToQuery
   # rubocop:disable Metrics/ClassLength
   class Compiler
+    # Policy evidence is an opaque capability. Its constructor and immutable
+    # snapshot are private, so caller-supplied metadata can never stand in for
+    # a successful policy compilation. The issuing configuration and adapter
+    # are retained by reference so their identities cannot be recycled while
+    # the capability lives.
+    class PolicyContract
+      def initialize(snapshot, policy_adapter, config)
+        @snapshot = snapshot
+        @policy_adapter = policy_adapter
+        @config = config
+        freeze
+      end
+
+      attr_reader :snapshot, :policy_adapter, :config
+      private :snapshot, :policy_adapter, :config
+      private_class_method :new
+    end
+    private_constant :PolicyContract
+
     def initialize(config)
       @config = config
     end
 
-    def compile(intent, current_user: nil)
-      intent_with_policy = apply_policy_predicates(intent, current_user)
-      if use_arel?
-        compile_with_arel(intent_with_policy, current_user)
-      else
-        compile_with_string_building(intent_with_policy, current_user)
+    def compile(intent, current_user: nil, allow_tables: nil)
+      working_intent = deep_dup_value(intent)
+      strip_untrusted_policy_expectations!(working_intent)
+      intent_with_policy = apply_policy_predicates(working_intent, current_user)
+      result = if use_arel?
+                 compile_with_arel(intent_with_policy, current_user)
+               else
+                 compile_with_string_building(intent_with_policy, current_user)
+               end
+      verify_compiled_policy_binds!(result)
+      result[:policy_contract] = build_policy_contract(result, allow_tables) if @config.policy_adapter.respond_to?(:call)
+      result
+    end
+
+    class << self
+      private
+
+      def valid_policy_contract?(contract, sql:, params:, bind_spec:, intent:, allow_tables:, config:)
+        return false unless contract.instance_of?(PolicyContract)
+        return false unless contract.send(:config).equal?(config)
+        return false unless contract.send(:policy_adapter).equal?(config.policy_adapter)
+
+        contract.send(:snapshot) == policy_contract_snapshot(
+          sql: sql, params: params, bind_spec: bind_spec, intent: intent,
+          allow_tables: allow_tables, config: config
+        )
+      end
+
+      def issue_policy_contract(result, allow_tables, config)
+        policy_adapter = config.policy_adapter
+        snapshot = policy_contract_snapshot(
+          sql: result[:sql], params: result[:params], bind_spec: result[:bind_spec],
+          intent: result[:intent], allow_tables: allow_tables, config: config
+        )
+        PolicyContract.send(:new, snapshot, policy_adapter, config)
+      end
+
+      def policy_contract_snapshot(sql:, params:, bind_spec:, intent:, allow_tables:, config:)
+        deep_freeze_contract_value(
+          sql: sql,
+          params: params,
+          bind_spec: bind_spec,
+          intent: intent,
+          allow_tables: allow_tables,
+          adapter: config.adapter,
+          policy_adapter_fail_open: config.respond_to?(:policy_adapter_fail_open) && config.policy_adapter_fail_open
+        )
+      end
+
+      def deep_freeze_contract_value(value)
+        copy = case value
+               when Hash
+                 value.each_with_object({}) do |(key, item), result|
+                   result[deep_freeze_contract_value(key)] = deep_freeze_contract_value(item)
+                 end
+               when Array
+                 value.map { |item| deep_freeze_contract_value(item) }
+               when Symbol, Numeric, true, false, nil
+                 value
+               else
+                 value.dup
+               end
+        copy.freeze
+      rescue TypeError
+        value
       end
     end
 
@@ -31,11 +109,15 @@ module CodeToQuery
 
       table = intent['table']
       policy_info = safely_fetch_policy(table: table, current_user: current_user, intent: intent)
+      merge_policy_allowed_tables!(intent, policy_info)
       policy_hash = extract_enforced_predicates(policy_info)
       return intent if policy_hash.empty?
 
+      policy_keys = []
       filters = Array(intent['filters']) + policy_hash.map do |column, value|
         if value.is_a?(Range) && value.begin && value.end
+          policy_keys << "policy_#{column}_start"
+          policy_keys << "policy_#{column}_end"
           {
             'column' => column.to_s,
             'op' => 'between',
@@ -43,6 +125,7 @@ module CodeToQuery
             'param_end' => "policy_#{column}_end"
           }
         else
+          policy_keys << "policy_#{column}"
           {
             'column' => column.to_s,
             'op' => '=',
@@ -63,7 +146,8 @@ module CodeToQuery
 
       intent.merge(
         'filters' => filters,
-        'params' => params
+        'params' => params,
+        '__policy_expected_keys' => merge_policy_expected_keys(intent, policy_keys)
       )
     rescue PolicyAdapterError
       raise
@@ -75,28 +159,7 @@ module CodeToQuery
     end
 
     def safely_fetch_policy(table:, current_user:, intent: nil)
-      if intent
-        @config.policy_adapter.call(current_user, table: table, intent: intent)
-      else
-        @config.policy_adapter.call(current_user, table: table)
-      end
-    rescue ArgumentError
-      # Backward compatibility: adapters may accept user plus table or only user.
-      begin
-        @config.policy_adapter.call(current_user, table: table)
-      rescue ArgumentError
-        begin
-          @config.policy_adapter.call(current_user)
-        rescue StandardError => e
-          return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
-
-          raise policy_failure("Policy adapter failed: #{e.message}")
-        end
-      rescue StandardError => e
-        return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
-
-        raise policy_failure("Policy adapter failed: #{e.message}")
-      end
+      PolicyAdapterInvoker.call(@config.policy_adapter, current_user, table: table, intent: intent)
     rescue StandardError => e
       return handle_policy_failure("Policy adapter failed: #{e.message}") if policy_adapter_fail_open?
 
@@ -200,7 +263,7 @@ module CodeToQuery
 
       sql = visitor.accept(query.ast, Arel::Collectors::SQLString.new).value
 
-      { sql: sql, params: params_hash, bind_spec: bind_spec }
+      { sql: sql, params: params_hash, bind_spec: bind_spec, intent: intent }
     rescue StandardError => e
       @config.logger.warn("[code_to_query] Arel compilation failed: #{e.message}")
       compile_with_string_building(intent, current_user)
@@ -217,7 +280,7 @@ module CodeToQuery
       if (filters = intent['filters']).present?
         where_fragments = filters.map do |filter|
           fragment, placeholder_index = build_string_filter_fragment(
-            filter, table, bind_spec, params_hash, placeholder_index, current_user
+            filter, table, bind_spec, params_hash, placeholder_index, current_user, intent
           )
           fragment
         end
@@ -238,7 +301,7 @@ module CodeToQuery
         sql_parts << build_string_limit_clause(limit)
       end
 
-      { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec }
+      { sql: sql_parts.join(' '), params: params_hash, bind_spec: bind_spec, intent: intent }
     end
 
     def build_arel_select_query(intent, table)
@@ -393,13 +456,14 @@ module CodeToQuery
       "LIMIT #{Integer(limit)}"
     end
 
-    def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+    def build_string_filter_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       col = quote_ident(filter['column'])
+      col = "#{quote_ident(table)}.#{col}" if base_policy_filter?(filter, intent)
       case filter['op']
       when '=', '>', '<', '>=', '<=', '!=', '<>'
         build_string_comparison_fragment(col, filter, bind_spec, placeholder_index)
       when 'exists', 'not_exists'
-        build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+        build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       when 'between'
         build_string_between_fragment(col, filter, bind_spec, params_hash, placeholder_index)
       when 'in'
@@ -419,12 +483,17 @@ module CodeToQuery
     end
 
     def build_string_between_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
-      append_between_bind_specs(bind_spec, filter, params_hash)
+      between_clause = build_between_bind_clause(
+        filter,
+        bind_spec,
+        params_hash,
+        placeholder_index: placeholder_index
+      )
 
-      placeholder1 = placeholder_for_adapter(placeholder_index)
-      placeholder2 = placeholder_for_adapter(placeholder_index + 1)
-
-      ["#{quoted_column} BETWEEN #{placeholder1} AND #{placeholder2}", placeholder_index + 2]
+      [
+        "#{quoted_column} BETWEEN #{between_clause[:start_placeholder]} AND #{between_clause[:end_placeholder]}",
+        between_clause[:next_placeholder_index]
+      ]
     end
 
     def build_string_in_fragment(quoted_column, filter, bind_spec, params_hash, placeholder_index)
@@ -444,7 +513,7 @@ module CodeToQuery
       ["#{quoted_column} #{filter['op'].upcase} #{placeholder}", placeholder_index + 1]
     end
 
-    def build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user)
+    def build_string_subquery_fragment(filter, table, bind_spec, params_hash, placeholder_index, current_user, intent)
       related_table = filter['related_table']
       fk_column = filter['fk_column']
       base_column = filter['base_column'] || 'id'
@@ -459,7 +528,7 @@ module CodeToQuery
 
       sub_where = ["#{rt}.#{fk_col} = #{quote_ident(table)}.#{base_col}"]
       sub_where, placeholder_index = apply_policy_in_subquery(
-        sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user
+        sub_where, bind_spec, params_hash, placeholder_index, current_user, intent, filter
       )
 
       related_filters.each do |related_filter|
@@ -489,45 +558,95 @@ module CodeToQuery
       end
     end
 
-    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, related_table, placeholder_index, current_user)
+    def apply_policy_in_subquery(sub_where, bind_spec, params_hash, placeholder_index, current_user, intent, filter)
       return [sub_where, placeholder_index] unless @config.policy_adapter.respond_to?(:call)
 
-      info = safely_fetch_policy(table: related_table, current_user: current_user)
+      related_table = filter['related_table']
+      info = safely_fetch_policy(table: related_table, current_user: current_user, intent: intent)
+      merge_policy_allowed_tables!(intent, info, required_table: related_table)
       predicates = extract_enforced_predicates(info)
+      enforce_related_allowed_columns!(info, related_table, filter)
       return [sub_where, placeholder_index] unless predicates.is_a?(Hash) && predicates.any?
 
+      # Preserve declaration ownership structurally; policy key fragments are
+      # intentionally display-safe but are not an injective table identity.
+      policy_filter_index = Array(intent['filters']).index { |candidate| candidate.equal?(filter) }
       predicates.each do |column, value|
         rcol = "#{quote_ident(related_table)}.#{quote_ident(column)}"
         policy_key_prefix = subquery_policy_key_prefix(related_table, column, placeholder_index)
         if value.is_a?(Range) && value.begin && value.end
           start_key = "#{policy_key_prefix}_start"
           end_key = "#{policy_key_prefix}_end"
+          merge_policy_expected_keys!(intent, start_key, end_key)
           params_hash[start_key] = value.begin
           params_hash[end_key] = value.end
           p1 = placeholder_for_adapter(placeholder_index)
-          append_bind_spec(bind_spec, key: start_key, column: column)
+          append_bind_spec(bind_spec, key: start_key, column: column, policy_filter_index: policy_filter_index)
           placeholder_index += 1
           p2 = placeholder_for_adapter(placeholder_index)
-          append_bind_spec(bind_spec, key: end_key, column: column)
+          append_bind_spec(bind_spec, key: end_key, column: column, policy_filter_index: policy_filter_index)
           placeholder_index += 1
           sub_where << "#{rcol} BETWEEN #{p1} AND #{p2}"
         else
           key = policy_key_prefix
+          merge_policy_expected_keys!(intent, key)
           params_hash[key] = value
           p = placeholder_for_adapter(placeholder_index)
-          append_bind_spec(bind_spec, key: key, column: column)
+          append_bind_spec(bind_spec, key: key, column: column, policy_filter_index: policy_filter_index)
           placeholder_index += 1
           sub_where << "#{rcol} = #{p}"
         end
       end
 
       [sub_where, placeholder_index]
-    rescue PolicyAdapterError
+    rescue PolicyAdapterError, ArgumentError
       raise
     rescue StandardError => e
       raise policy_failure("Policy application failed in subquery: #{e.message}") unless policy_adapter_fail_open?
 
       [sub_where, placeholder_index]
+    end
+
+    def enforce_related_allowed_columns!(policy_info, related_table, filter)
+      allowed_columns = policy_info[:allowed_columns] || policy_info['allowed_columns']
+      return unless allowed_columns.is_a?(Hash) && allowed_columns.any?
+
+      entry = allowed_columns.find do |table, _columns|
+        policy_column_table_allowed?(related_table, table)
+      end
+      if entry.nil? && %i[postgres postgresql].include?(@config.adapter.to_sym) &&
+         allowed_columns.any? { |table, _columns| IdentifierSemantics.ascii_case_insensitive?(related_table, table) }
+        raise ArgumentError,
+              "Invalid intent: policy table key not permitted on '#{related_table}' due to identifier casing"
+      end
+      return unless entry
+
+      columns = Array(entry.last).map(&:to_s)
+      return if columns.empty?
+
+      fk_column = filter['fk_column']
+      unless policy_column_allowed?(fk_column, columns)
+        raise ArgumentError, "Invalid intent: column '#{fk_column}' not permitted on '#{related_table}'"
+      end
+
+      Array(filter['related_filters']).each do |related_filter|
+        column = related_filter['column']
+        next if column.nil? || policy_column_allowed?(column, columns)
+
+        raise ArgumentError, "Invalid intent: filter column '#{column}' not permitted on '#{related_table}'"
+      end
+    end
+
+    def policy_column_allowed?(column, allowed_columns)
+      return allowed_columns.include?(column.to_s) if %i[postgres postgresql].include?(@config.adapter.to_sym)
+
+      allowed_columns.any? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, column) }
+    end
+
+    def policy_column_table_allowed?(table, allowed)
+      return IdentifierSemantics.ascii_case_insensitive?(table, allowed) if %i[mysql sqlite].include?(@config.adapter.to_sym)
+
+      table.to_s == allowed.to_s
     end
 
     def subquery_policy_key_prefix(table, column, placeholder_index)
@@ -539,6 +658,94 @@ module CodeToQuery
 
     def policy_key_fragment(value)
       value.to_s.gsub(/[^a-zA-Z0-9_]/, '_')
+    end
+
+    def merge_policy_expected_keys(intent, keys)
+      (Array(intent['__policy_expected_keys']) + Array(keys)).map(&:to_s).uniq
+    end
+
+    def merge_policy_expected_keys!(intent, *keys)
+      intent['__policy_expected_keys'] = merge_policy_expected_keys(intent, keys.flatten)
+    end
+
+    def merge_policy_allowed_tables!(intent, policy_info, required_table: nil)
+      return unless policy_info.is_a?(Hash)
+
+      present = policy_info.key?(:allowed_tables) || policy_info.key?('allowed_tables')
+      return unless present
+
+      value = policy_info.key?(:allowed_tables) ? policy_info[:allowed_tables] : policy_info['allowed_tables']
+      allowed_tables = Array(value).map(&:to_s).reject(&:empty?)
+      if required_table && allowed_tables.none? { |allowed| policy_table_allowed?(required_table, allowed) }
+        raise PolicyAdapterError, "Policy does not allow related table: #{required_table}"
+      end
+
+      if required_table
+        intent['__policy_related_tables'] =
+          (Array(intent['__policy_related_tables']) + [required_table.to_s]).uniq
+        return
+      end
+
+      if intent.key?('__policy_allowed_tables')
+        existing = Array(intent['__policy_allowed_tables'])
+        intent['__policy_allowed_tables'] = if existing.empty? || allowed_tables.empty?
+                                              []
+                                            else
+                                              (existing + allowed_tables).uniq
+                                            end
+      else
+        intent['__policy_allowed_tables'] = allowed_tables
+      end
+    end
+
+    def policy_table_allowed?(table, allowed)
+      if @config.adapter.to_sym == :sqlite
+        return IdentifierSemantics.ascii_case_insensitive?(table, allowed)
+      end
+
+      table.to_s == allowed.to_s
+    end
+
+    def strip_untrusted_policy_expectations!(intent)
+      intent.delete('__policy_expected_keys')
+      intent.delete(:__policy_expected_keys)
+      intent.delete('__policy_allowed_tables')
+      intent.delete(:__policy_allowed_tables)
+      intent.delete('__policy_related_tables')
+      intent.delete(:__policy_related_tables)
+    end
+
+    # Independent compiler backstop: metadata alone never proves that a policy
+    # predicate was emitted. Every expected key must have both a bind and value.
+    def verify_compiled_policy_binds!(result)
+      expected = Array(result.dig(:intent, '__policy_expected_keys')).map(&:to_s)
+      return if expected.empty?
+
+      binds = Array(result[:bind_spec]).filter_map { |bind| bind[:key]&.to_s }
+      params = (result[:params] || {}).keys.map(&:to_s)
+      missing = expected.reject { |key| binds.include?(key) && params.include?(key) }
+      return if missing.empty?
+
+      raise PolicyAdapterError, "Compiled policy binds are missing: #{missing.join(', ')}"
+    end
+
+    def build_policy_contract(result, allow_tables)
+      self.class.send(:issue_policy_contract, result, allow_tables, @config)
+    end
+
+    def deep_dup_value(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(key, nested_value), copy|
+          copy[key] = deep_dup_value(nested_value)
+        end
+      when Array
+        value.map { |nested_value| deep_dup_value(nested_value) }
+      else
+        value.dup
+      end
+    rescue TypeError
+      value
     end
 
     def build_arel_condition(table, filter, bind_spec, params_hash = nil)
@@ -555,11 +762,11 @@ module CodeToQuery
         # Force fallback to string builder for complex correlated subqueries
         raise StandardError, 'not_exists Arel compilation is not implemented; falling back to string builder'
       when 'between'
-        start_key, end_key = append_between_bind_specs(bind_spec, filter, params_hash)
+        between_clause = build_between_bind_clause(filter, bind_spec, params_hash)
 
-        start_param = Arel::Nodes::BindParam.new(start_key)
-        end_param = Arel::Nodes::BindParam.new(end_key)
-        column.between(start_param..end_param)
+        start_param = Arel::Nodes::BindParam.new(between_clause[:start_key])
+        end_param = Arel::Nodes::BindParam.new(between_clause[:end_key])
+        Arel::Nodes::Between.new(column, Arel::Nodes::And.new([start_param, end_param]))
       when 'in'
         key = filter_bind_key(filter)
         append_bind_spec(bind_spec, key: key, column: filter['column'], cast: :array)
@@ -604,6 +811,13 @@ module CodeToQuery
       filter['param'] || filter['column']
     end
 
+    def base_policy_filter?(filter, intent)
+      expected_keys = Array(intent['__policy_expected_keys']).map(&:to_s)
+      filter_keys = [filter['param'], filter['param_start'], filter['param_end']].compact.map(&:to_s)
+
+      filter_keys.any? { |key| expected_keys.include?(key) && !key.start_with?('policy_subquery_') }
+    end
+
     def between_bind_keys(filter)
       [
         filter['param_start'] || default_between_bind_key(filter, 'start'),
@@ -621,22 +835,32 @@ module CodeToQuery
       [start_key, end_key]
     end
 
-    def alias_legacy_between_params!(params_hash, filter, start_key, end_key)
-      return if filter['param_start'] || filter['param_end']
+    def build_between_bind_clause(filter, bind_spec, params_hash = nil, placeholder_index: nil)
+      start_key, end_key = append_between_bind_specs(bind_spec, filter, params_hash)
 
-      if !params_hash_has_key?(params_hash, start_key) && params_hash_has_key?(params_hash, 'start')
-        params_hash[start_key] = params_hash['start']
+      {
+        start_key: start_key,
+        end_key: end_key,
+        start_placeholder: placeholder_index && placeholder_for_adapter(placeholder_index),
+        end_placeholder: placeholder_index && placeholder_for_adapter(placeholder_index + 1),
+        next_placeholder_index: placeholder_index && (placeholder_index + 2)
+      }
+    end
+
+    def alias_legacy_between_params!(params_hash, filter, start_key, end_key)
+      if !filter['param_start'] && !params_hash_has_key?(params_hash, start_key) && params_hash_has_key?(params_hash, 'start')
+        params_hash[start_key] = params_hash_value(params_hash, 'start')
       end
 
-      return if params_hash_has_key?(params_hash, end_key)
+      return if filter['param_end'] || params_hash_has_key?(params_hash, end_key)
       return unless params_hash_has_key?(params_hash, 'end')
 
-      params_hash[end_key] = params_hash['end']
+      params_hash[end_key] = params_hash_value(params_hash, 'end')
     end
 
     def default_between_bind_key(filter, bound_side)
       column = filter['column'].to_s.strip
-      return bound_side unless column != ''
+      return bound_side if column.empty?
 
       "#{sanitize_bind_key(column)}_#{bound_side}"
     end
@@ -649,12 +873,28 @@ module CodeToQuery
       params_hash.key?(key.to_s) || params_hash.key?(key.to_sym)
     end
 
+    def params_hash_value(params_hash, key)
+      return params_hash[key.to_s] if params_hash.key?(key.to_s)
+
+      params_hash[key.to_sym]
+    end
+
+    def params_hash_lookup(params_hash, key)
+      return [false, nil] unless params_hash.respond_to?(:key?)
+      return [true, params_hash[key.to_s]] if params_hash.key?(key.to_s)
+      return [true, params_hash[key.to_sym]] if params_hash.key?(key.to_sym)
+
+      [false, nil]
+    end
+
     def having_bind_key(having_filter)
       having_filter['param'] || "having_#{having_filter['column']}"
     end
 
-    def append_bind_spec(bind_spec, key:, column:, cast: nil)
-      bind_spec << { key: key, column: column, cast: cast }
+    def append_bind_spec(bind_spec, key:, column:, cast: nil, policy_filter_index: nil)
+      bind = { key: key, column: column, cast: cast }
+      bind[:policy_filter_index] = policy_filter_index unless policy_filter_index.nil?
+      bind_spec << bind
     end
 
     def placeholder_for_adapter(index)
@@ -846,7 +1086,8 @@ module CodeToQuery
         key = f['param'] || col
         next unless key
 
-        raw = params[key.to_s] || params[key.to_sym]
+        present, raw = params_hash_lookup(params, key)
+        next unless present
         next if raw.nil?
 
         # Map Rails enum string to integer

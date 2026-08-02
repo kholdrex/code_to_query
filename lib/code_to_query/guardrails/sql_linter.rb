@@ -3,19 +3,49 @@
 module CodeToQuery
   module Guardrails
     class SqlLinter
+      DANGEROUS_FUNCTIONS = %w[
+        load_file outfile dumpfile
+        sys_exec sys_eval
+        benchmark sleep pg_sleep
+        version user database schema
+        current_user current_database current_schema
+        inet_server_addr inet_client_addr
+      ].freeze
+
+      # PostgreSQL's complete built-in server-side XML export family. These
+      # functions read a relation, query, cursor, schema, or the whole current
+      # database without putting the exported relations in a FROM/JOIN clause,
+      # so every member can bypass this linter's table allowlist.
+      POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS = %w[
+        table_to_xml table_to_xmlschema table_to_xml_and_xmlschema
+        query_to_xml query_to_xmlschema query_to_xml_and_xmlschema
+        cursor_to_xml cursor_to_xmlschema
+        schema_to_xml schema_to_xmlschema schema_to_xml_and_xmlschema
+        database_to_xml database_to_xmlschema database_to_xml_and_xmlschema
+      ].freeze
+
+      POSTGRES_QUOTED_FUNCTION_IDENTIFIER = /
+        (?<!")"(?<identifier>(?:""|[^"])*)"\s*\(
+      /x
+
+      POSTGRES_UNICODE_FUNCTION_IDENTIFIER = /
+        (?<![A-Z0-9_$"])U&"(?<identifier>(?:""|[^"])*)"
+      /ix
+
       def initialize(config, allow_tables: nil)
         @config = config
-        # normalize allowlist to lowercase for case-insensitive comparison
-        @allow_tables = Array(allow_tables).compact.map { |t| t.to_s.downcase }
+        @allow_tables = Array(allow_tables).compact.map(&:to_s)
       end
 
       def check!(sql)
         normalized = sql.to_s.strip.gsub(/\s+/, ' ')
 
         check_statement_type!(normalized)
+        check_unsupported_table_query_expressions!(normalized)
         check_dangerous_patterns!(normalized)
         check_required_limit!(normalized)
         check_table_allowlist!(normalized) if @allow_tables.any?
+        check_no_postgres_server_side_xml_export_functions!(normalized)
         check_no_literals!(normalized)
         check_no_dangerous_functions!(normalized)
         check_no_subqueries!(normalized) if @config.block_subqueries
@@ -39,6 +69,17 @@ module CodeToQuery
         dangerous_keywords.each do |keyword|
           raise SecurityError, "Dangerous keyword '#{keyword}' is not allowed" if sql.match?(/\b#{keyword}\b/i)
         end
+      end
+
+      def check_unsupported_table_query_expressions!(sql)
+        database = case @config.adapter.to_sym
+                   when :postgres, :postgresql then 'PostgreSQL'
+                   when :mysql then 'MySQL'
+                   else return
+                   end
+        return unless Query::SqlScanner.new(adapter: @config.adapter).table_query_expression?(sql)
+
+        raise SecurityError, "#{database} TABLE query expressions are not supported"
       end
 
       def check_dangerous_patterns!(sql)
@@ -209,10 +250,19 @@ module CodeToQuery
         referenced_tables = extract_table_names(sql)
 
         referenced_tables.each do |table|
-          unless @allow_tables.include?(table.to_s.downcase)
+          unless table_allowed?(table)
             raise SecurityError, "Table '#{table}' is not in the allowed list: #{@allow_tables.join(', ')}"
           end
         end
+      end
+
+      def table_allowed?(table)
+        # MySQL table-name case semantics vary by lower_case_table_names and
+        # host filesystem. Fail closed with exact matching when they are not
+        # explicitly available to this legacy linter.
+        return @allow_tables.include?(table.to_s) if @config.adapter.to_sym == :mysql
+
+        @allow_tables.any? { |allowed| IdentifierSemantics.ascii_case_insensitive?(allowed, table) }
       end
 
       def check_no_literals!(sql)
@@ -234,18 +284,174 @@ module CodeToQuery
       end
 
       def check_no_dangerous_functions!(sql)
-        dangerous_functions = %w[
-          load_file outfile dumpfile
-          sys_exec sys_eval
-          benchmark sleep pg_sleep
-          version user database schema
-          current_user current_database current_schema
-          inet_server_addr inet_client_addr
-        ]
-
-        dangerous_functions.each do |func|
+        DANGEROUS_FUNCTIONS.each do |func|
           raise SecurityError, "Dangerous function '#{func}' is not allowed" if sql.match?(/\b#{func}\s*\(/i)
         end
+      end
+
+      def check_no_postgres_server_side_xml_export_functions!(sql)
+        return unless %i[postgres postgresql].include?(@config.adapter.to_sym)
+
+        scanner = Query::SqlScanner.new
+        quoted_searchable = scanner.mask_literals_and_comments(sql)
+        executable_searchable = scanner.mask_literals_comments_and_identifier_contents(sql)
+
+        POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS.each do |func|
+          next unless postgres_unquoted_function_call?(executable_searchable, func)
+
+          raise SecurityError, "Dangerous function '#{func}' is not allowed"
+        end
+
+        quoted_searchable.scan(POSTGRES_QUOTED_FUNCTION_IDENTIFIER) do
+          identifier = Regexp.last_match[:identifier].gsub('""', '"')
+          next unless POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS.include?(identifier)
+
+          raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
+        end
+
+        quoted_searchable.scan(POSTGRES_UNICODE_FUNCTION_IDENTIFIER) do
+          match = Regexp.last_match
+          escape, function_call = postgres_unicode_function_escape(sql, match.end(0))
+          next unless function_call
+
+          unless escape
+            raise SecurityError, 'Inconclusive PostgreSQL Unicode function identifier'
+          end
+
+          identifier = decode_postgres_unicode_identifier(match[:identifier], escape)
+          unless identifier
+            raise SecurityError, 'Inconclusive PostgreSQL Unicode function identifier'
+          end
+          next unless POSTGRES_SERVER_SIDE_XML_EXPORT_FUNCTIONS.include?(identifier)
+
+          raise SecurityError, "Dangerous function '#{identifier}' is not allowed"
+        end
+      end
+
+      def postgres_unicode_function_escape(sql, index)
+        whitespace_start = index
+        index += 1 while sql[index]&.match?(/\s/)
+        escape = '\\'
+
+        if index > whitespace_start && sql[index, 7]&.casecmp?('UESCAPE') &&
+           !postgres_identifier_continuation?(sql[index + 7])
+          index += 7
+          index += 1 while sql[index]&.match?(/\s/)
+          escape, index = postgres_uescape_literal(sql, index)
+          return [nil, true] unless index
+
+          index += 1 while sql[index]&.match?(/\s/)
+        end
+
+        [escape, sql[index] == '(']
+      end
+
+      def postgres_uescape_literal(sql, index)
+        escape_string = sql[index]&.casecmp?('E') && sql[index + 1] == "'"
+        index += 1 if escape_string
+        return [nil, nil] unless sql[index] == "'"
+
+        index += 1
+        value = +''
+        while index < sql.length
+          if sql[index] == "'" && sql[index + 1] == "'"
+            value << "'"
+            index += 2
+          elsif sql[index] == "'"
+            return [value.length == 1 ? value : nil, index + 1]
+          elsif escape_string && sql[index] == '\\'
+            character, index = postgres_escape_string_character(sql, index + 1)
+            return [nil, nil] unless index
+
+            value << character
+          else
+            value << sql[index]
+            index += 1
+          end
+        end
+        [nil, nil]
+      end
+
+      def postgres_escape_string_character(sql, index)
+        return [nil, nil] unless sql[index]
+
+        simple = { 'b' => "\b", 'f' => "\f", 'n' => "\n", 'r' => "\r", 't' => "\t" }
+        return [simple.fetch(sql[index], sql[index]), index + 1] unless sql[index].match?(/[0-7xXuU]/)
+
+        pattern, base = case sql[index]
+                        when /[0-7]/ then [/[0-7]{1,3}/, 8]
+                        when /[xX]/ then [/[0-9A-F]{1,2}/i, 16]
+                        when 'u' then [/[0-9A-F]{4}/i, 16]
+                        when 'U' then [/[0-9A-F]{8}/i, 16]
+                        end
+        digit_index = sql[index].match?(/[xXuU]/) ? index + 1 : index
+        digits = sql[digit_index..]&.match(/\A#{pattern}/)&.[](0)
+        return [nil, nil] unless digits
+
+        [digits.to_i(base).chr(Encoding::UTF_8), digit_index + digits.length]
+      rescue RangeError
+        [nil, nil]
+      end
+
+      def postgres_unquoted_function_call?(sql, function)
+        sql.to_enum(:scan, /#{Regexp.escape(function)}\s*\(/i).any? do
+          match = Regexp.last_match
+          previous = match.begin(0).positive? ? sql[match.begin(0) - 1] : nil
+          following = sql[match.begin(0) + function.length]
+
+          !postgres_identifier_continuation?(previous) && !postgres_identifier_continuation?(following)
+        end
+      end
+
+      def postgres_identifier_continuation?(character)
+        character && (!character.ascii_only? || character.match?(/[A-Z0-9_$]/i))
+      end
+
+      def decode_postgres_unicode_identifier(identifier, escape)
+        return if escape.match?(/[0-9A-F+'"\s]/i)
+
+        characters = identifier.gsub('""', '"').chars
+        decoded = +''
+        index = 0
+
+        while index < characters.length
+          if characters[index] != escape
+            decoded << characters[index]
+            index += 1
+            next
+          end
+
+          codepoint, consumed = postgres_unicode_escape(characters, index, escape)
+          return unless codepoint
+
+          if codepoint.between?(0xD800, 0xDBFF)
+            low_surrogate, low_consumed = postgres_unicode_escape(characters, index + consumed, escape)
+            return unless low_surrogate&.between?(0xDC00, 0xDFFF)
+
+            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + low_surrogate - 0xDC00
+            consumed += low_consumed
+          end
+
+          decoded << codepoint.chr(Encoding::UTF_8)
+          index += consumed
+        end
+
+        decoded
+      rescue RangeError
+        nil
+      end
+
+      def postgres_unicode_escape(characters, index, escape)
+        return unless characters[index] == escape
+        return [escape.ord, 2] if characters[index + 1] == escape
+
+        extended = characters[index + 1] == '+'
+        digits = extended ? 6 : 4
+        start = index + (extended ? 2 : 1)
+        hexadecimal = characters[start, digits]&.join
+        return unless hexadecimal&.match?(/\A[0-9A-F]{#{digits}}\z/i)
+
+        [hexadecimal.to_i(16), digits + (extended ? 2 : 1)]
       end
 
       def check_no_subqueries!(sql)
@@ -313,16 +519,20 @@ module CodeToQuery
 
       def extract_table_names(sql)
         tables = []
+        relation_modifier = %i[postgres postgresql].include?(@config.adapter.to_sym) ? '(?:ONLY\s+)?' : ''
+        table_reference = /(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+)(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?)/
 
         # Extract FROM clause tables (improved regex)
-        from_matches = sql.scan(/\bFROM\s+(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+)(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?)/i)
+        from_matches = sql.scan(/\bFROM\s+#{relation_modifier}#{table_reference}/i)
         from_matches.each do |match|
           table_name = match.compact.first
           tables << table_name if table_name
         end
 
         # Extract JOIN clause tables (improved regex)
-        join_matches = sql.scan(/\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+)?JOIN\s+(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([a-zA-Z0-9_]+)(?:\s+(?:AS\s+)?[a-zA-Z_][a-zA-Z0-9_]*)?)/i)
+        join_matches = sql.scan(
+          /\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+)?JOIN\s+#{relation_modifier}#{table_reference}/i
+        )
         join_matches.each do |match|
           table_name = match.compact.first
           tables << table_name if table_name
