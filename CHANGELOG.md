@@ -2,7 +2,19 @@
 
 This file tracks the major changes in each release.
 
-## [Unreleased]
+## [0.2.0] - 2026-08-02
+
+### Upgrading from 0.1.0
+
+This release flips several defaults from fail-open to fail-closed. Applications that relied on the previous permissive behavior will start raising instead of silently degrading.
+
+- EXPLAIN gate errors now block the query. If your deployment must stay available when the adapter cannot run EXPLAIN, set `config.explain_fail_open = true`.
+- Policy adapter failures now block the query instead of dropping the enforced predicate. Set `config.policy_adapter_fail_open = true` only when availability outranks row-level enforcement.
+- Build executable queries through `CodeToQuery.ask` when a `policy_adapter` is configured. Directly constructed `Query` objects carry no policy contract and are rejected.
+- Recompile queries after swapping the policy adapter or the configuration it depends on. Query objects cached across such a change are invalidated by design.
+- Policy adapters returning `allowed_tables: []` now deny every table. Omit the key entirely when you do not intend to supply a policy table allowlist.
+- `Query#sql`, `#params`, `#intent`, and `#metrics` return detached copies. Code that mutated those return values to alter query state must use the supported APIs instead.
+- Context packs now omit sensitive column metadata. Regenerate them with `rake code_to_query:rebuild`, and extend `config.sensitive_column_patterns` if your schema uses other naming conventions.
 
 ### Added
 - Added sanitized EXPLAIN gate audit instrumentation for safe ActiveSupport subscriber logging of decision metadata and thresholds. ExplainGate error logs now record exception classes only so adapter error messages cannot leak SQL or bind fragments.
