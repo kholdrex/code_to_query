@@ -21,7 +21,11 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   spec.metadata = {
+    'homepage_uri' => 'https://codetoquery.com/',
     'source_code_uri' => 'https://github.com/kholdrex/code_to_query',
+    'changelog_uri' => 'https://github.com/kholdrex/code_to_query/blob/master/CHANGELOG.md',
+    'documentation_uri' => 'https://github.com/kholdrex/code_to_query#readme',
+    'bug_tracker_uri' => 'https://github.com/kholdrex/code_to_query/issues',
     'rubygems_mfa_required' => 'true'
   }
 

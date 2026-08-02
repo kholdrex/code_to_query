@@ -56,6 +56,7 @@ module PackageVerification
   def verify_required_metadata!(spec)
     required_metadata = {
       'source_code_uri' => 'https://github.com/kholdrex/code_to_query',
+      'changelog_uri' => 'https://github.com/kholdrex/code_to_query/blob/master/CHANGELOG.md',
       'rubygems_mfa_required' => 'true'
     }
 
