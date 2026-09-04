@@ -12,6 +12,12 @@ module CodeToQuery
   module Instrumentation
     module_function
 
+    SAFE_PAYLOAD_KEYS = %i[
+      adapter allow_seq_scans allowed bind_count error_class fail_open filter_count join_count
+      limit max_query_cost max_query_rows policy_applied query_shape query_type reason
+      row_limit table
+    ].freeze
+
     def instrument(stage, payload = {})
       event_name = "code_to_query.#{stage}"
       safe_payload = payload
@@ -53,7 +59,14 @@ module CodeToQuery
     end
 
     def telemetry_payload(payload, started:)
-      payload.merge(duration_ms: elapsed_ms(started))
+      sanitized_payload(payload).merge(duration_ms: elapsed_ms(started))
+    end
+
+    def sanitized_payload(payload)
+      payload.each_with_object({}) do |(key, value), sanitized|
+        normalized_key = key.to_sym
+        sanitized[normalized_key] = value if SAFE_PAYLOAD_KEYS.include?(normalized_key)
+      end
     end
 
     def elapsed_ms(started_at)
