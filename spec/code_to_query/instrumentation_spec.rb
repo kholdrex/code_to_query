@@ -80,10 +80,16 @@ RSpec.describe CodeToQuery::Instrumentation do
       expect(payload.inspect).not_to include('SELECT', 'secret@example.test', 'private', 'Ignore previous', 'secret prompt')
     end
 
-    it 'publishes SecurityError failures with only the exception class' do
+    it 'publishes sanitized SecurityError failures without the exception message' do
       expect do
-        described_class.instrument(:lint, table: 'users', query_shape: 'select:users') do
-          raise SecurityError, 'rejected SELECT containing secret-bind'
+        described_class.instrument(
+          :lint,
+          table: 'users',
+          query_shape: 'select:users',
+          reason: 'rejected SELECT containing secret-bind',
+          policy_applied: Object.new
+        ) do
+          raise SecurityError
         end
       end.to raise_error(SecurityError)
 
@@ -94,12 +100,16 @@ RSpec.describe CodeToQuery::Instrumentation do
       expect(payload.inspect).not_to include('rejected SELECT', 'secret-bind')
     end
 
-    it 'publishes a duration without a block' do
+    it 'publishes a duration without a block and does not block on subscriber failure' do
+      raising_subscriber = ActiveSupport::Notifications.subscribe('code_to_query.plan') do
+        raise 'subscriber should not affect the caller'
+      end
+
       expect(described_class.instrument(:plan, query_shape: 'select:users')).to be_nil
 
-      expect(events).to contain_exactly(
-        ['code_to_query.plan', include(query_shape: 'select:users', duration_ms: a_kind_of(Numeric))]
-      )
+      expect(events).to contain_exactly(['code_to_query.plan', include(query_shape: 'select:users', duration_ms: a_kind_of(Numeric))])
+    ensure
+      ActiveSupport::Notifications.unsubscribe(raising_subscriber) if raising_subscriber
     end
   end
 end

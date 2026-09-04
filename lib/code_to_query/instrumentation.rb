@@ -17,7 +17,7 @@ module CodeToQuery
       limit max_query_cost max_query_rows policy_applied query_shape query_type reason
       row_limit table
     ].freeze
-    SAFE_SCALAR_CLASSES = [FalseClass, Float, Integer, NilClass, Numeric, String, Symbol, TrueClass].freeze
+    SAFE_SCALAR_CLASSES = [FalseClass, Float, Integer, NilClass, String, Symbol, TrueClass].freeze
     SAFE_STRING = %r{\A[a-zA-Z0-9_.:/-]+\z}
 
     def instrument(stage, payload = {})
