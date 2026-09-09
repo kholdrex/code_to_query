@@ -6,6 +6,7 @@ gemspec
 
 gem 'activerecord', '~> 7.2.0'
 gem 'activesupport', '~> 7.2.0'
+gem 'json', '< 3.0'
 
 group :test do
   gem 'mysql2', '>= 0.4.4'
@@ -16,6 +17,6 @@ group :test do
 end
 
 group :development do
-  gem 'rubocop', '~> 1.0'
+  gem 'rubocop', '>= 1.0', '< 1.87'
   gem 'rubocop-rspec'
 end

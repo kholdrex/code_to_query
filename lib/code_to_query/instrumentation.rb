@@ -12,6 +12,14 @@ module CodeToQuery
   module Instrumentation
     module_function
 
+    SAFE_PAYLOAD_KEYS = %i[
+      adapter allow_seq_scans allowed bind_count error_class fail_open filter_count join_count
+      limit max_query_cost max_query_rows policy_applied query_shape query_type reason
+      row_limit table
+    ].freeze
+    SAFE_SCALAR_CLASSES = [FalseClass, Float, Integer, NilClass, String, Symbol, TrueClass].freeze
+    SAFE_STRING = %r{\A[a-zA-Z0-9_.:/-]+\z}
+
     def instrument(stage, payload = {})
       event_name = "code_to_query.#{stage}"
       safe_payload = payload
@@ -53,7 +61,25 @@ module CodeToQuery
     end
 
     def telemetry_payload(payload, started:)
-      payload.merge(duration_ms: elapsed_ms(started))
+      sanitized_payload(payload).merge(duration_ms: elapsed_ms(started))
+    end
+
+    def sanitized_payload(payload)
+      return {} unless payload.is_a?(Hash)
+
+      payload.each_with_object({}) do |(key, value), sanitized|
+        normalized_key = key.is_a?(String) || key.is_a?(Symbol) ? key.to_sym : key
+        next unless SAFE_PAYLOAD_KEYS.include?(normalized_key)
+
+        sanitized[normalized_key] = value if safe_scalar?(value)
+      end
+    end
+
+    def safe_scalar?(value)
+      return false unless SAFE_SCALAR_CLASSES.any? { |klass| value.instance_of?(klass) }
+      return true unless value.is_a?(String) || value.is_a?(Symbol)
+
+      SAFE_STRING.match?(value.to_s)
     end
 
     def elapsed_ms(started_at)
